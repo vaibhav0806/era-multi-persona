@@ -16,12 +16,25 @@ type Runner interface {
 	Run(ctx context.Context, taskID int64, description string) (branch, summary string, err error)
 }
 
+// Notifier is called by RunNext when a task finishes. Both methods are
+// fire-and-forget — the notifier is expected to log its own errors and
+// return promptly.
+type Notifier interface {
+	NotifyCompleted(ctx context.Context, taskID int64, branch, summary string)
+	NotifyFailed(ctx context.Context, taskID int64, reason string)
+}
+
 type Queue struct {
-	repo   *db.Repo
-	runner Runner
+	repo     *db.Repo
+	runner   Runner
+	notifier Notifier
 }
 
 func New(repo *db.Repo, runner Runner) *Queue { return &Queue{repo: repo, runner: runner} }
+
+// SetNotifier attaches a Notifier to this Queue. Safe to call once at
+// startup; do not change mid-flight — RunNext reads the field without a lock.
+func (q *Queue) SetNotifier(n Notifier) { q.notifier = n }
 
 func (q *Queue) CreateTask(ctx context.Context, desc string) (int64, error) {
 	t, err := q.repo.CreateTask(ctx, desc)
@@ -82,12 +95,18 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 		if ferr := q.repo.FailTask(ctx, t.ID, runErr.Error()); ferr != nil {
 			return true, fmt.Errorf("fail task: %w (original: %v)", ferr, runErr)
 		}
+		if q.notifier != nil {
+			q.notifier.NotifyFailed(ctx, t.ID, runErr.Error())
+		}
 		return true, runErr
 	}
 
 	_ = q.repo.AppendEvent(ctx, t.ID, "completed", "{}")
 	if err := q.repo.CompleteTask(ctx, t.ID, branch, summary); err != nil {
 		return true, fmt.Errorf("complete task: %w", err)
+	}
+	if q.notifier != nil {
+		q.notifier.NotifyCompleted(ctx, t.ID, branch, summary)
 	}
 	return true, nil
 }

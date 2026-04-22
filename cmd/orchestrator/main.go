@@ -56,6 +56,11 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
+	q.SetNotifier(&tgNotifier{
+		client: client,
+		chatID: cfg.TelegramAllowedUserID,
+		repo:   cfg.GitHubSandboxRepo,
+	})
 	handler := telegram.NewHandler(client, q)
 
 	updates, err := client.Updates(ctx)
@@ -110,3 +115,29 @@ func fail(err error) {
 	fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 	os.Exit(1)
 }
+
+type tgNotifier struct {
+	client telegram.Client
+	chatID int64
+	repo   string // "owner/repo"
+}
+
+func (n *tgNotifier) NotifyCompleted(ctx context.Context, id int64, branch, summary string) {
+	msg := fmt.Sprintf(
+		"task #%d completed\nbranch: %s\nhttps://github.com/%s/tree/%s\nsummary: %s",
+		id, branch, n.repo, branch, summary,
+	)
+	if err := n.client.SendMessage(ctx, n.chatID, msg); err != nil {
+		slog.Error("notify completed", "err", err, "task", id)
+	}
+}
+
+func (n *tgNotifier) NotifyFailed(ctx context.Context, id int64, reason string) {
+	msg := fmt.Sprintf("task #%d failed: %s", id, reason)
+	if err := n.client.SendMessage(ctx, n.chatID, msg); err != nil {
+		slog.Error("notify failed", "err", err, "task", id)
+	}
+}
+
+// compile-time assertion that tgNotifier satisfies queue.Notifier
+var _ queue.Notifier = (*tgNotifier)(nil)

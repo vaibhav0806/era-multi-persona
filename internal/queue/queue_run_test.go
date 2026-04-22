@@ -124,3 +124,70 @@ func TestQueue_RunNext_NoTasks(t *testing.T) {
 	require.False(t, ran)
 	require.Equal(t, 0, fr.calls)
 }
+
+type fakeNotifier struct {
+	completed []completedArgs
+	failed    []failedArgs
+}
+type completedArgs struct {
+	ID      int64
+	Branch  string
+	Summary string
+}
+type failedArgs struct {
+	ID     int64
+	Reason string
+}
+
+func (f *fakeNotifier) NotifyCompleted(ctx context.Context, id int64, branch, summary string) {
+	f.completed = append(f.completed, completedArgs{id, branch, summary})
+}
+func (f *fakeNotifier) NotifyFailed(ctx context.Context, id int64, reason string) {
+	f.failed = append(f.failed, failedArgs{id, reason})
+}
+
+func TestQueue_Notifier_OnSuccess(t *testing.T) {
+	ctx := context.Background()
+	fr := &fakeRunner{branch: "agent/1/ok", summary: "done"}
+	q, _ := newRunQueue(t, fr)
+	n := &fakeNotifier{}
+	q.SetNotifier(n)
+
+	id, _ := q.CreateTask(ctx, "work")
+	_, err := q.RunNext(ctx)
+	require.NoError(t, err)
+
+	require.Len(t, n.completed, 1)
+	require.Equal(t, id, n.completed[0].ID)
+	require.Equal(t, "agent/1/ok", n.completed[0].Branch)
+	require.Equal(t, "done", n.completed[0].Summary)
+	require.Len(t, n.failed, 0)
+}
+
+func TestQueue_Notifier_OnFailure(t *testing.T) {
+	ctx := context.Background()
+	fr := &fakeRunner{err: errors.New("boom")}
+	q, _ := newRunQueue(t, fr)
+	n := &fakeNotifier{}
+	q.SetNotifier(n)
+
+	id, _ := q.CreateTask(ctx, "work")
+	_, _ = q.RunNext(ctx)
+
+	require.Len(t, n.failed, 1)
+	require.Equal(t, id, n.failed[0].ID)
+	require.Contains(t, n.failed[0].Reason, "boom")
+	require.Len(t, n.completed, 0)
+}
+
+func TestQueue_Notifier_NilSafe(t *testing.T) {
+	// If no notifier is attached, RunNext must not panic.
+	ctx := context.Background()
+	fr := &fakeRunner{branch: "b", summary: "s"}
+	q, _ := newRunQueue(t, fr)
+	// intentionally no SetNotifier
+
+	_, _ = q.CreateTask(ctx, "x")
+	_, err := q.RunNext(ctx)
+	require.NoError(t, err)
+}
