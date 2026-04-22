@@ -59,7 +59,7 @@ func TestRepo_CompleteAndFail(t *testing.T) {
 	r := openTest(t)
 
 	t1, _ := r.CreateTask(ctx, "a")
-	require.NoError(t, r.CompleteTask(ctx, t1.ID, "agent/1/slug", "did stuff"))
+	require.NoError(t, r.CompleteTask(ctx, t1.ID, "agent/1/slug", "did stuff", 0, 0))
 	got, _ := r.GetTask(ctx, t1.ID)
 	require.Equal(t, "completed", got.Status)
 	require.Equal(t, "agent/1/slug", got.BranchName.String)
@@ -84,6 +84,21 @@ func TestRepo_Events(t *testing.T) {
 	require.Len(t, evts, 2)
 	require.Equal(t, "started", evts[0].Kind)
 	require.Equal(t, "progress", evts[1].Kind)
+}
+
+func TestRepo_CompleteTask_RecordsTokensAndCost(t *testing.T) {
+	ctx := context.Background()
+	r := openTest(t)
+
+	task, err := r.CreateTask(ctx, "x")
+	require.NoError(t, err)
+	require.NoError(t, r.CompleteTask(ctx, task.ID, "agent/1/b", "done", 12345, 17))
+
+	got, err := r.GetTask(ctx, task.ID)
+	require.NoError(t, err)
+	require.Equal(t, "completed", got.Status)
+	require.Equal(t, int64(12345), got.TokensUsed)
+	require.Equal(t, int64(17), got.CostCents)
 }
 
 func TestRepo_ListRecent(t *testing.T) {

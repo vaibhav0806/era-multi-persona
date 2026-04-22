@@ -36,10 +36,12 @@ func (r *Repo) ClaimNext(ctx context.Context) (Task, error) {
 	return t, nil
 }
 
-func (r *Repo) CompleteTask(ctx context.Context, id int64, branch, summary string) error {
+func (r *Repo) CompleteTask(ctx context.Context, id int64, branch, summary string, tokensUsed, costCents int64) error {
 	return r.q.MarkTaskCompleted(ctx, MarkTaskCompletedParams{
 		BranchName: sql.NullString{String: branch, Valid: true},
 		Summary:    sql.NullString{String: summary, Valid: true},
+		TokensUsed: tokensUsed,
+		CostCents:  costCents,
 		ID:         id,
 	})
 }

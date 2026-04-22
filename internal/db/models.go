@@ -36,4 +36,6 @@ type Task struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	StartedAt   sql.NullTime   `json:"started_at"`
 	FinishedAt  sql.NullTime   `json:"finished_at"`
+	TokensUsed  int64          `json:"tokens_used"`
+	CostCents   int64          `json:"cost_cents"`
 }

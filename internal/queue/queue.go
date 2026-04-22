@@ -102,7 +102,7 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 	}
 
 	_ = q.repo.AppendEvent(ctx, t.ID, "completed", "{}")
-	if err := q.repo.CompleteTask(ctx, t.ID, branch, summary); err != nil {
+	if err := q.repo.CompleteTask(ctx, t.ID, branch, summary, 0, 0); err != nil {
 		return true, fmt.Errorf("complete task: %w", err)
 	}
 	if q.notifier != nil {

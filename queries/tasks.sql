@@ -17,7 +17,13 @@ WHERE id = (SELECT id FROM tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1
 RETURNING *;
 
 -- name: MarkTaskCompleted :exec
-UPDATE tasks SET status = 'completed', branch_name = ?, summary = ?, finished_at = CURRENT_TIMESTAMP
+UPDATE tasks SET
+    status       = 'completed',
+    branch_name  = ?,
+    summary      = ?,
+    tokens_used  = ?,
+    cost_cents   = ?,
+    finished_at  = CURRENT_TIMESTAMP
 WHERE id = ?;
 
 -- name: MarkTaskFailed :exec
