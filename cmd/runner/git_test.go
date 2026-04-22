@@ -19,16 +19,16 @@ func makeBareAndClone(t *testing.T) (bare, clone string) {
 	require.NoError(t, exec.Command("git", "clone", bare, clone).Run())
 
 	require.NoError(t, os.WriteFile(filepath.Join(clone, "README.md"), []byte("hi\n"), 0o644))
-	run(t, clone, "git", "config", "user.email", "t@t")
-	run(t, clone, "git", "config", "user.name", "t")
-	run(t, clone, "git", "add", "README.md")
-	run(t, clone, "git", "commit", "-m", "seed")
-	run(t, clone, "git", "push", "origin", "main")
+	runCmd(t, clone, "git", "config", "user.email", "t@t")
+	runCmd(t, clone, "git", "config", "user.name", "t")
+	runCmd(t, clone, "git", "add", "README.md")
+	runCmd(t, clone, "git", "commit", "-m", "seed")
+	runCmd(t, clone, "git", "push", "origin", "main")
 	require.NoError(t, os.RemoveAll(clone))
 	return bare, ""
 }
 
-func run(t *testing.T, dir, name string, args ...string) {
+func runCmd(t *testing.T, dir, name string, args ...string) {
 	t.Helper()
 	c := exec.Command(name, args...)
 	c.Dir = dir
