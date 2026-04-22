@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -18,12 +19,16 @@ import (
 var ErrNoResult = errors.New("runner produced no RESULT line")
 
 // Docker runs tasks as Docker containers by shelling out to the `docker` CLI.
-// We shell out (rather than use the Docker SDK) because the CLI is simpler to
-// set up, easier to audit, and good enough for M0.
 type Docker struct {
-	Image       string // e.g. "era-runner:m0"
-	SandboxRepo string // "owner/repo"
-	GitHubPAT   string // scoped PAT for pushes
+	Image            string
+	SandboxRepo      string // "owner/repo"
+	GitHubPAT        string
+	OpenRouterAPIKey string
+	PiModel          string
+	MaxTokens        int
+	MaxCostCents     int
+	MaxIterations    int
+	MaxWallSeconds   int
 }
 
 // RunInput carries the per-task inputs to the container.
@@ -34,22 +39,28 @@ type RunInput struct {
 
 // RunOutput is the parsed result of a successful container run.
 type RunOutput struct {
-	Branch  string
-	Summary string
-	RawLog  string
+	Branch    string
+	Summary   string
+	Tokens    int64
+	CostCents int
+	RawLog    string
 }
 
 // Run spawns the container, feeds it the task inputs as env vars, waits for
 // it to exit, and parses the RESULT line out of its combined stdout+stderr.
-// If the container exits non-zero or produces no RESULT line, Run returns an
-// error that includes the combined log for debugging.
 func (d *Docker) Run(ctx context.Context, in RunInput) (*RunOutput, error) {
 	args := []string{
 		"run", "--rm",
-		"-e", fmt.Sprintf("PI_TASK_ID=%d", in.TaskID),
-		"-e", fmt.Sprintf("PI_TASK_DESCRIPTION=%s", in.Description),
-		"-e", fmt.Sprintf("PI_GITHUB_PAT=%s", d.GitHubPAT),
-		"-e", fmt.Sprintf("PI_GITHUB_REPO=%s", d.SandboxRepo),
+		"-e", fmt.Sprintf("ERA_TASK_ID=%d", in.TaskID),
+		"-e", fmt.Sprintf("ERA_TASK_DESCRIPTION=%s", in.Description),
+		"-e", fmt.Sprintf("ERA_GITHUB_PAT=%s", d.GitHubPAT),
+		"-e", fmt.Sprintf("ERA_GITHUB_REPO=%s", d.SandboxRepo),
+		"-e", fmt.Sprintf("ERA_OPENROUTER_API_KEY=%s", d.OpenRouterAPIKey),
+		"-e", fmt.Sprintf("ERA_PI_MODEL=%s", d.PiModel),
+		"-e", fmt.Sprintf("ERA_MAX_TOKENS=%d", d.MaxTokens),
+		"-e", fmt.Sprintf("ERA_MAX_COST_CENTS=%d", d.MaxCostCents),
+		"-e", fmt.Sprintf("ERA_MAX_ITERATIONS=%d", d.MaxIterations),
+		"-e", fmt.Sprintf("ERA_MAX_WALL_SECONDS=%d", d.MaxWallSeconds),
 		d.Image,
 	}
 	cmd := exec.CommandContext(ctx, "docker", args...)
@@ -66,9 +77,6 @@ func (d *Docker) Run(ctx context.Context, in RunInput) (*RunOutput, error) {
 		return nil, fmt.Errorf("start docker: %w", err)
 	}
 
-	// Fan-in both streams into a single buffer so we have the full log even
-	// if the RESULT line lands on stderr (entrypoint emits it to stdout, but
-	// we don't want a test regression to hide it).
 	var mu sync.Mutex
 	var combined strings.Builder
 	var wg sync.WaitGroup
@@ -81,17 +89,17 @@ func (d *Docker) Run(ctx context.Context, in RunInput) (*RunOutput, error) {
 		return nil, fmt.Errorf("docker run: %w; log:\n%s", err, combined.String())
 	}
 
-	branch, summary, err := ParseResult(strings.NewReader(combined.String()))
+	out, err := ParseResult(strings.NewReader(combined.String()))
 	if err != nil {
 		return nil, fmt.Errorf("%w; log:\n%s", err, combined.String())
 	}
-	return &RunOutput{Branch: branch, Summary: summary, RawLog: combined.String()}, nil
+	out.RawLog = combined.String()
+	return out, nil
 }
 
 func streamTo(mu *sync.Mutex, r io.Reader, w *strings.Builder, wg *sync.WaitGroup) {
 	defer wg.Done()
 	sc := bufio.NewScanner(r)
-	// Allow larger-than-default lines for logs with long paths.
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
@@ -103,9 +111,8 @@ func streamTo(mu *sync.Mutex, r io.Reader, w *strings.Builder, wg *sync.WaitGrou
 }
 
 // ParseResult scans a log stream for the first line of the form
-// "RESULT key=value key=value..." and returns the branch and summary fields.
-// Returns ErrNoResult if no such line exists.
-func ParseResult(r io.Reader) (branch, summary string, err error) {
+// "RESULT key=value key=value..." and returns a RunOutput.
+func ParseResult(r io.Reader) (*RunOutput, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -113,6 +120,7 @@ func ParseResult(r io.Reader) (branch, summary string, err error) {
 		if !strings.HasPrefix(line, "RESULT ") {
 			continue
 		}
+		out := &RunOutput{}
 		for _, p := range strings.Fields(strings.TrimPrefix(line, "RESULT ")) {
 			kv := strings.SplitN(p, "=", 2)
 			if len(kv) != 2 {
@@ -120,14 +128,21 @@ func ParseResult(r io.Reader) (branch, summary string, err error) {
 			}
 			switch kv[0] {
 			case "branch":
-				branch = kv[1]
+				out.Branch = kv[1]
 			case "summary":
-				summary = kv[1]
+				out.Summary = kv[1]
+			case "tokens":
+				n, _ := strconv.ParseInt(kv[1], 10, 64)
+				out.Tokens = n
+			case "cost_cents":
+				n, _ := strconv.Atoi(kv[1])
+				out.CostCents = n
 			}
 		}
-		if branch != "" {
-			return branch, summary, nil
+		// no_changes path: branch="" but summary non-empty
+		if out.Branch != "" || out.Summary != "" {
+			return out, nil
 		}
 	}
-	return "", "", ErrNoResult
+	return nil, ErrNoResult
 }

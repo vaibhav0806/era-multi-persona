@@ -32,13 +32,14 @@ import (
 	"github.com/vaibhav0806/era/internal/runner"
 )
 
-const runnerImage = "era-runner:m0"
+const runnerImage = "era-runner:m1"
 
 func TestE2E_QueueToDockerToBranch(t *testing.T) {
 	pat := os.Getenv("PI_GITHUB_PAT")
 	repo := os.Getenv("PI_GITHUB_SANDBOX_REPO")
-	if pat == "" || repo == "" {
-		t.Skip("PI_GITHUB_PAT and PI_GITHUB_SANDBOX_REPO must be set")
+	openRouterKey := os.Getenv("PI_OPENROUTER_API_KEY")
+	if pat == "" || repo == "" || openRouterKey == "" {
+		t.Skip("PI_GITHUB_PAT, PI_GITHUB_SANDBOX_REPO, and PI_OPENROUTER_API_KEY must be set")
 	}
 	requireDocker(t)
 	requireImage(t)
@@ -53,9 +54,15 @@ func TestE2E_QueueToDockerToBranch(t *testing.T) {
 	r := db.NewRepo(h)
 
 	d := &runner.Docker{
-		Image:       runnerImage,
-		SandboxRepo: repo,
-		GitHubPAT:   pat,
+		Image:            runnerImage,
+		SandboxRepo:      repo,
+		GitHubPAT:        pat,
+		OpenRouterAPIKey: os.Getenv("PI_OPENROUTER_API_KEY"),
+		PiModel:          "moonshotai/kimi-k2.6",
+		MaxTokens:        500_000,
+		MaxCostCents:     20,
+		MaxIterations:    10,
+		MaxWallSeconds:   180,
 	}
 	q := queue.New(r, runner.QueueAdapter{D: d})
 

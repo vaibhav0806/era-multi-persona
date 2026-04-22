@@ -13,14 +13,14 @@ import (
 
 // Runner is wired in Task 15; nil-safe for Phase C.
 type Runner interface {
-	Run(ctx context.Context, taskID int64, description string) (branch, summary string, err error)
+	Run(ctx context.Context, taskID int64, description string) (branch, summary string, tokens int64, costCents int, err error)
 }
 
 // Notifier is called by RunNext when a task finishes. Both methods are
 // fire-and-forget — the notifier is expected to log its own errors and
 // return promptly.
 type Notifier interface {
-	NotifyCompleted(ctx context.Context, taskID int64, branch, summary string)
+	NotifyCompleted(ctx context.Context, taskID int64, branch, summary string, tokens int64, costCents int)
 	NotifyFailed(ctx context.Context, taskID int64, reason string)
 }
 
@@ -89,7 +89,7 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 
 	_ = q.repo.AppendEvent(ctx, t.ID, "started", "{}")
 
-	branch, summary, runErr := q.runner.Run(ctx, t.ID, t.Description)
+	branch, summary, tokens, costCents, runErr := q.runner.Run(ctx, t.ID, t.Description)
 	if runErr != nil {
 		_ = q.repo.AppendEvent(ctx, t.ID, "failed", quoteJSON(runErr.Error()))
 		if ferr := q.repo.FailTask(ctx, t.ID, runErr.Error()); ferr != nil {
@@ -102,11 +102,11 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 	}
 
 	_ = q.repo.AppendEvent(ctx, t.ID, "completed", "{}")
-	if err := q.repo.CompleteTask(ctx, t.ID, branch, summary, 0, 0); err != nil {
+	if err := q.repo.CompleteTask(ctx, t.ID, branch, summary, tokens, int64(costCents)); err != nil {
 		return true, fmt.Errorf("complete task: %w", err)
 	}
 	if q.notifier != nil {
-		q.notifier.NotifyCompleted(ctx, t.ID, branch, summary)
+		q.notifier.NotifyCompleted(ctx, t.ID, branch, summary, tokens, costCents)
 	}
 	return true, nil
 }

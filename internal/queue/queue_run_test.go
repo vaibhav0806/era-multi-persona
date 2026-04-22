@@ -12,19 +12,21 @@ import (
 )
 
 type fakeRunner struct {
-	branch  string
-	summary string
-	err     error
-	calls   int
-	lastID  int64
-	lastDes string
+	branch    string
+	summary   string
+	tokens    int64
+	costCents int
+	err       error
+	calls     int
+	lastID    int64
+	lastDes   string
 }
 
-func (f *fakeRunner) Run(ctx context.Context, taskID int64, desc string) (string, string, error) {
+func (f *fakeRunner) Run(ctx context.Context, taskID int64, desc string) (string, string, int64, int, error) {
 	f.calls++
 	f.lastID = taskID
 	f.lastDes = desc
-	return f.branch, f.summary, f.err
+	return f.branch, f.summary, f.tokens, f.costCents, f.err
 }
 
 func newRunQueue(t *testing.T, r queue.Runner) (*queue.Queue, *db.Repo) {
@@ -125,25 +127,28 @@ func TestQueue_RunNext_NoTasks(t *testing.T) {
 	require.Equal(t, 0, fr.calls)
 }
 
-type fakeNotifier struct {
-	completed []completedArgs
-	failed    []failedArgs
-}
 type completedArgs struct {
-	ID      int64
-	Branch  string
-	Summary string
+	ID        int64
+	Branch    string
+	Summary   string
+	Tokens    int64
+	CostCents int
 }
 type failedArgs struct {
 	ID     int64
 	Reason string
 }
 
-func (f *fakeNotifier) NotifyCompleted(ctx context.Context, id int64, branch, summary string) {
-	f.completed = append(f.completed, completedArgs{id, branch, summary})
+type fakeNotifier struct {
+	completed []completedArgs
+	failed    []failedArgs
 }
-func (f *fakeNotifier) NotifyFailed(ctx context.Context, id int64, reason string) {
-	f.failed = append(f.failed, failedArgs{id, reason})
+
+func (f *fakeNotifier) NotifyCompleted(ctx context.Context, id int64, b, s string, t int64, c int) {
+	f.completed = append(f.completed, completedArgs{id, b, s, t, c})
+}
+func (f *fakeNotifier) NotifyFailed(ctx context.Context, id int64, r string) {
+	f.failed = append(f.failed, failedArgs{id, r})
 }
 
 func TestQueue_Notifier_OnSuccess(t *testing.T) {
@@ -190,4 +195,17 @@ func TestQueue_Notifier_NilSafe(t *testing.T) {
 	_, _ = q.CreateTask(ctx, "x")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
+}
+
+func TestQueue_RunNext_RecordsTokensAndCost(t *testing.T) {
+	ctx := context.Background()
+	fr := &fakeRunner{branch: "b", summary: "s", tokens: 4321, costCents: 9}
+	q, repo := newRunQueue(t, fr)
+	id, _ := q.CreateTask(ctx, "x")
+	_, err := q.RunNext(ctx)
+	require.NoError(t, err)
+	got, err := repo.GetTask(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, int64(4321), got.TokensUsed)
+	require.Equal(t, int64(9), got.CostCents)
 }

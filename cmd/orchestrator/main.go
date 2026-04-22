@@ -19,9 +19,6 @@ import (
 
 var version = "0.0.1-m0"
 
-// runnerImage is the Docker image tag built by docker/runner/Dockerfile.
-const runnerImage = "era-runner:m0"
-
 // pollInterval is how often the orchestrator checks for queued tasks.
 // 2s is short enough to feel responsive and long enough to stay cheap.
 const pollInterval = 2 * time.Second
@@ -46,9 +43,15 @@ func main() {
 	repo := db.NewRepo(handle)
 
 	docker := &runner.Docker{
-		Image:       runnerImage,
-		SandboxRepo: cfg.GitHubSandboxRepo,
-		GitHubPAT:   cfg.GitHubPAT,
+		Image:            "era-runner:m1",
+		SandboxRepo:      cfg.GitHubSandboxRepo,
+		GitHubPAT:        cfg.GitHubPAT,
+		OpenRouterAPIKey: cfg.OpenRouterAPIKey,
+		PiModel:          cfg.PiModel,
+		MaxTokens:        cfg.MaxTokensPerTask,
+		MaxCostCents:     cfg.MaxCostCentsPerTask,
+		MaxIterations:    cfg.MaxIterationsPerTask,
+		MaxWallSeconds:   cfg.MaxWallClockSeconds,
 	}
 	q := queue.New(repo, runner.QueueAdapter{D: docker})
 
@@ -122,11 +125,17 @@ type tgNotifier struct {
 	repo   string // "owner/repo"
 }
 
-func (n *tgNotifier) NotifyCompleted(ctx context.Context, id int64, branch, summary string) {
-	msg := fmt.Sprintf(
-		"task #%d completed\nbranch: %s\nhttps://github.com/%s/tree/%s\nsummary: %s",
-		id, branch, n.repo, branch, summary,
-	)
+func (n *tgNotifier) NotifyCompleted(ctx context.Context, id int64, branch, summary string, tokens int64, costCents int) {
+	var msg string
+	if branch == "" {
+		msg = fmt.Sprintf("task #%d: no changes\nsummary: %s\ntokens: %d  cost: $%.2f",
+			id, summary, tokens, float64(costCents)/100.0)
+	} else {
+		msg = fmt.Sprintf(
+			"task #%d completed\nbranch: %s\nhttps://github.com/%s/tree/%s\nsummary: %s\ntokens: %d  cost: $%.2f",
+			id, branch, n.repo, branch, summary, tokens, float64(costCents)/100.0,
+		)
+	}
 	if err := n.client.SendMessage(ctx, n.chatID, msg); err != nil {
 		slog.Error("notify completed", "err", err, "task", id)
 	}
