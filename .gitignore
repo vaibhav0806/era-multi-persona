@@ -1,0 +1,21 @@
+# Binaries
+/bin/
+/orchestrator
+
+# Local env
+.env
+.env.local
+
+# SQLite
+*.db
+*.db-wal
+*.db-shm
+
+# Test artifacts
+coverage.out
+*.test
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
