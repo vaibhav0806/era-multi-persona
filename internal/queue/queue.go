@@ -3,7 +3,9 @@ package queue
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/vaibhav0806/pi-agent/internal/db"
 	"github.com/vaibhav0806/pi-agent/internal/telegram"
@@ -55,6 +57,44 @@ func (q *Queue) ListRecent(ctx context.Context, limit int) ([]telegram.TaskSumma
 		})
 	}
 	return out, nil
+}
+
+// RunNext claims the next queued task, runs it via the attached Runner, and
+// records the outcome. Returns (ran, err): ran=true if a task was claimed
+// (even if it failed), ran=false if the queue was empty.
+//
+// The runner error is returned as-is so callers can log/notify. The task is
+// still marked failed in the DB and a "failed" event is appended.
+func (q *Queue) RunNext(ctx context.Context) (bool, error) {
+	t, err := q.repo.ClaimNext(ctx)
+	if errors.Is(err, db.ErrNoTasks) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("claim next: %w", err)
+	}
+
+	_ = q.repo.AppendEvent(ctx, t.ID, "started", "{}")
+
+	branch, summary, runErr := q.runner.Run(ctx, t.ID, t.Description)
+	if runErr != nil {
+		_ = q.repo.AppendEvent(ctx, t.ID, "failed", quoteJSON(runErr.Error()))
+		if ferr := q.repo.FailTask(ctx, t.ID, runErr.Error()); ferr != nil {
+			return true, fmt.Errorf("fail task: %w (original: %v)", ferr, runErr)
+		}
+		return true, runErr
+	}
+
+	_ = q.repo.AppendEvent(ctx, t.ID, "completed", "{}")
+	if err := q.repo.CompleteTask(ctx, t.ID, branch, summary); err != nil {
+		return true, fmt.Errorf("complete task: %w", err)
+	}
+	return true, nil
+}
+
+func quoteJSON(s string) string {
+	b, _ := json.Marshal(map[string]string{"error": s})
+	return string(b)
 }
 
 // compile-time assertion that Queue satisfies telegram.Ops

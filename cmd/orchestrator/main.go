@@ -7,15 +7,24 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/vaibhav0806/pi-agent/internal/config"
 	"github.com/vaibhav0806/pi-agent/internal/db"
 	"github.com/vaibhav0806/pi-agent/internal/queue"
+	"github.com/vaibhav0806/pi-agent/internal/runner"
 	"github.com/vaibhav0806/pi-agent/internal/telegram"
 )
 
 var version = "0.0.1-m0"
+
+// runnerImage is the Docker image tag built by docker/runner/Dockerfile.
+const runnerImage = "pi-agent-runner:m0"
+
+// pollInterval is how often the orchestrator checks for queued tasks.
+// 2s is short enough to feel responsive and long enough to stay cheap.
+const pollInterval = 2 * time.Second
 
 func main() {
 	if err := godotenv.Load(); err != nil {
@@ -36,7 +45,12 @@ func main() {
 	defer handle.Close()
 	repo := db.NewRepo(handle)
 
-	q := queue.New(repo, nil) // runner wired in Task 15
+	docker := &runner.Docker{
+		Image:       runnerImage,
+		SandboxRepo: cfg.GitHubSandboxRepo,
+		GitHubPAT:   cfg.GitHubPAT,
+	}
+	q := queue.New(repo, runner.QueueAdapter{D: docker})
 
 	client, err := telegram.NewClient(cfg.TelegramToken, cfg.TelegramAllowedUserID)
 	if err != nil {
@@ -48,6 +62,26 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
+
+	// Task-execution loop: poll the queue and run one task per tick.
+	go func() {
+		ticker := time.NewTicker(pollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				ran, err := q.RunNext(ctx)
+				if err != nil {
+					slog.Error("run next", "err", err)
+				}
+				if ran {
+					slog.Info("task run cycle finished")
+				}
+			}
+		}
+	}()
 
 	slog.Info("orchestrator ready",
 		"version", version,
