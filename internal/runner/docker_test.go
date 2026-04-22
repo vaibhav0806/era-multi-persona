@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/vaibhav0806/pi-agent/internal/runner"
+	"github.com/vaibhav0806/era/internal/runner"
 )
 
 func TestParseResult(t *testing.T) {

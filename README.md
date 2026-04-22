@@ -1,6 +1,8 @@
-# pi-agent
+# era
 
 A personal agent orchestrator that runs tasks via Telegram, executes them in disposable Docker containers, and reports back with a pushed git branch. See [FEATURE.md](./FEATURE.md) for the full vision and design principles.
+
+The name reflects the intent: this is the chapter where the typing gets delegated and the focus shifts to describing and reviewing. M0 lays down the chassis; later milestones swap in a real coding agent, network allowlisting, and approval gates.
 
 ## Status: Milestone 0 — plumbing only
 
@@ -13,18 +15,18 @@ Full roadmap and implementation plan: [`docs/superpowers/plans/`](./docs/superpo
 - Go 1.22+ (`brew install go`)
 - Docker (`brew install --cask docker`)
 - A Telegram bot token (from [@BotFather](https://t.me/BotFather)) and your numeric user ID (message [@userinfobot](https://t.me/userinfobot))
-- A throwaway GitHub repo (e.g. `<you>/pi-agent-sandbox`) with a `README.md` committed
+- A throwaway GitHub repo (e.g. `<you>/era-sandbox` or any sandbox repo you own) with a `README.md` committed
 - A GitHub Personal Access Token (classic PAT with `repo` scope, or fine-grained PAT with `Contents: Read and write` on the sandbox repo)
 
 ## Setup
 
 ```bash
-git clone https://github.com/vaibhav0806/pi-agent.git
-cd pi-agent
+git clone git@github.com:vaibhav0806/era.git
+cd era
 cp .env.example .env
 # Edit .env and fill in all five values
 
-docker build -t pi-agent-runner:m0 docker/runner/
+docker build -t era-runner:m0 docker/runner/
 make build
 ./bin/orchestrator
 ```

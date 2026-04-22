@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/vaibhav0806/pi-agent/internal/db"
+	"github.com/vaibhav0806/era/internal/db"
 )
 
 func openTest(t *testing.T) *db.Repo {

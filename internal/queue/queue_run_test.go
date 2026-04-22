@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/vaibhav0806/pi-agent/internal/db"
-	"github.com/vaibhav0806/pi-agent/internal/queue"
+	"github.com/vaibhav0806/era/internal/db"
+	"github.com/vaibhav0806/era/internal/queue"
 )
 
 type fakeRunner struct {

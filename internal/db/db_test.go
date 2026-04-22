@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/vaibhav0806/pi-agent/internal/db"
+	"github.com/vaibhav0806/era/internal/db"
 )
 
 func TestOpen_MigratesFreshDatabase(t *testing.T) {

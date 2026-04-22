@@ -27,12 +27,12 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/vaibhav0806/pi-agent/internal/db"
-	"github.com/vaibhav0806/pi-agent/internal/queue"
-	"github.com/vaibhav0806/pi-agent/internal/runner"
+	"github.com/vaibhav0806/era/internal/db"
+	"github.com/vaibhav0806/era/internal/queue"
+	"github.com/vaibhav0806/era/internal/runner"
 )
 
-const runnerImage = "pi-agent-runner:m0"
+const runnerImage = "era-runner:m0"
 
 func TestE2E_QueueToDockerToBranch(t *testing.T) {
 	pat := os.Getenv("PI_GITHUB_PAT")

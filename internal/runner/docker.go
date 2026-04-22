@@ -21,7 +21,7 @@ var ErrNoResult = errors.New("runner produced no RESULT line")
 // We shell out (rather than use the Docker SDK) because the CLI is simpler to
 // set up, easier to audit, and good enough for M0.
 type Docker struct {
-	Image       string // e.g. "pi-agent-runner:m0"
+	Image       string // e.g. "era-runner:m0"
 	SandboxRepo string // "owner/repo"
 	GitHubPAT   string // scoped PAT for pushes
 }

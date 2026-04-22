@@ -21,8 +21,8 @@ branch="agent/${PI_TASK_ID}/dummy-$(date -u +%s)"
 work=$(mktemp -d)
 cd "$work"
 
-git config --global user.email "pi-agent@local"
-git config --global user.name  "pi-agent"
+git config --global user.email "era@local"
+git config --global user.name  "era"
 git config --global advice.detachedHead false
 
 git clone --depth 1 "https://x-access-token:${PI_GITHUB_PAT}@github.com/${PI_GITHUB_REPO}.git" repo

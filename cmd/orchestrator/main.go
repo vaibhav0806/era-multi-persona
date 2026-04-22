@@ -10,17 +10,17 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/vaibhav0806/pi-agent/internal/config"
-	"github.com/vaibhav0806/pi-agent/internal/db"
-	"github.com/vaibhav0806/pi-agent/internal/queue"
-	"github.com/vaibhav0806/pi-agent/internal/runner"
-	"github.com/vaibhav0806/pi-agent/internal/telegram"
+	"github.com/vaibhav0806/era/internal/config"
+	"github.com/vaibhav0806/era/internal/db"
+	"github.com/vaibhav0806/era/internal/queue"
+	"github.com/vaibhav0806/era/internal/runner"
+	"github.com/vaibhav0806/era/internal/telegram"
 )
 
 var version = "0.0.1-m0"
 
 // runnerImage is the Docker image tag built by docker/runner/Dockerfile.
-const runnerImage = "pi-agent-runner:m0"
+const runnerImage = "era-runner:m0"
 
 // pollInterval is how often the orchestrator checks for queued tasks.
 // 2s is short enough to feel responsive and long enough to stay cheap.

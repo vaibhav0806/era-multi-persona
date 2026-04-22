@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/vaibhav0806/pi-agent/internal/db"
-	"github.com/vaibhav0806/pi-agent/internal/telegram"
+	"github.com/vaibhav0806/era/internal/db"
+	"github.com/vaibhav0806/era/internal/telegram"
 )
 
 // Runner is wired in Task 15; nil-safe for Phase C.

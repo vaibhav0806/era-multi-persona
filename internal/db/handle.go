@@ -8,7 +8,7 @@ import (
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 
-	"github.com/vaibhav0806/pi-agent/migrations"
+	"github.com/vaibhav0806/era/migrations"
 )
 
 type Handle struct {
