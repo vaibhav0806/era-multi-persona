@@ -2,6 +2,7 @@ package githubpr_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -48,4 +49,44 @@ func TestDefaultBranch_404(t *testing.T) {
 	_, err := c.DefaultBranch(context.Background(), "owner/repo")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "404")
+}
+
+func TestCreate_PostsCorrectBody(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "POST", r.Method)
+		require.Equal(t, "/repos/owner/repo/pulls", r.URL.Path)
+		require.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"number":42,"html_url":"https://github.com/owner/repo/pull/42","url":"https://api.github.com/repos/owner/repo/pulls/42"}`))
+	}))
+	defer srv.Close()
+	c := githubpr.New(srv.URL, &fakeTokens{tok: "ghs_test"})
+
+	pr, err := c.Create(context.Background(), githubpr.CreateArgs{
+		Repo:  "owner/repo",
+		Head:  "agent/1/foo",
+		Base:  "main",
+		Title: "[era] demo",
+		Body:  "some body",
+	})
+	require.NoError(t, err)
+	require.Equal(t, 42, pr.Number)
+	require.Equal(t, "https://github.com/owner/repo/pull/42", pr.HTMLURL)
+	require.Equal(t, "agent/1/foo", gotBody["head"])
+	require.Equal(t, "main", gotBody["base"])
+	require.Equal(t, "[era] demo", gotBody["title"])
+}
+
+func TestCreate_422Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"invalid"}]}`, 422)
+	}))
+	defer srv.Close()
+	c := githubpr.New(srv.URL, &fakeTokens{tok: "ghs_test"})
+
+	_, err := c.Create(context.Background(), githubpr.CreateArgs{Repo: "o/r", Head: "h", Base: "main", Title: "t", Body: "b"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "422")
 }

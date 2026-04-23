@@ -1,6 +1,7 @@
 package githubpr
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -55,6 +56,54 @@ func (c *Client) DefaultBranch(ctx context.Context, repo string) (string, error)
 		return "", fmt.Errorf("decode: %w", err)
 	}
 	return body.DefaultBranch, nil
+}
+
+// CreateArgs holds the parameters for creating a pull request.
+type CreateArgs struct {
+	Repo  string
+	Head  string
+	Base  string
+	Title string
+	Body  string
+}
+
+// PR represents a GitHub pull request response.
+type PR struct {
+	Number  int    `json:"number"`
+	URL     string `json:"url"`
+	HTMLURL string `json:"html_url"`
+}
+
+// Create opens a new pull request and returns the result.
+func (c *Client) Create(ctx context.Context, args CreateArgs) (*PR, error) {
+	payload, err := json.Marshal(map[string]string{
+		"head":  args.Head,
+		"base":  args.Base,
+		"title": args.Title,
+		"body":  args.Body,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := c.newReq(ctx, "POST", "/repos/"+args.Repo+"/pulls", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("create pr: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("create pr %s head=%s base=%s: %d %s",
+			args.Repo, args.Head, args.Base, resp.StatusCode, string(body))
+	}
+	var pr PR
+	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+		return nil, fmt.Errorf("decode pr: %w", err)
+	}
+	return &pr, nil
 }
 
 func (c *Client) newReq(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
