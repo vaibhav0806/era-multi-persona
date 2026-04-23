@@ -4,9 +4,19 @@ A personal agent orchestrator that runs tasks via Telegram, executes them in dis
 
 The name reflects the intent: this is the chapter where the typing gets delegated and the focus shifts to describing and reviewing. M0 lays down the chassis; later milestones swap in a real coding agent, network allowlisting, and approval gates.
 
-## Status: Milestone 0 — plumbing only
+## Status: Milestone 1 — real coding agent
 
-M0 proves the chassis end-to-end: Telegram in → queued task → Docker container → git branch pushed → completion message back. The container runs a **dummy script** (clone, append to README, commit, push) — there is no real coding agent yet. M1 swaps in Pi + OpenRouter.
+M1 swaps the dummy entrypoint for **Pi** (`@mariozechner/pi-coding-agent`), routed through **OpenRouter** (default: `moonshotai/kimi-k2.6`). Each task gets caps on tokens, USD cost, iteration count, and wall-clock. Tasks that exceed any cap are aborted before commit/push — no partial work leaks to the sandbox. Cost + token usage are reported back in the completion DM.
+
+**What M1 still does NOT have** (deferred to M2+):
+- No network allowlist on the runner container — Pi's `bash` tool can reach any host
+- No secret proxy — OpenRouter key + GitHub PAT live in Pi's env (Pi can read them)
+- No prompt-injection guards
+- No diff-scan / reward-hacking detection
+- Still classic PAT (no GitHub App yet)
+- No approval gates or EOD digest (M3)
+
+**Rule of thumb for M1:** point era at a throwaway sandbox repo only. Default cost cap is `$0.50` per task, iteration cap `30`, wall-clock `15min`. Watch the first few runs — you're meant to be reviewing, not trusting.
 
 Full roadmap and implementation plan: [`docs/superpowers/plans/`](./docs/superpowers/plans/).
 
@@ -17,6 +27,7 @@ Full roadmap and implementation plan: [`docs/superpowers/plans/`](./docs/superpo
 - A Telegram bot token (from [@BotFather](https://t.me/BotFather)) and your numeric user ID (message [@userinfobot](https://t.me/userinfobot))
 - A throwaway GitHub repo (e.g. `<you>/era-sandbox` or any sandbox repo you own) with a `README.md` committed
 - A GitHub Personal Access Token (classic PAT with `repo` scope, or fine-grained PAT with `Contents: Read and write` on the sandbox repo)
+- An [OpenRouter](https://openrouter.ai) account + API key with at least a few dollars of credit
 
 ## Setup
 
@@ -24,18 +35,19 @@ Full roadmap and implementation plan: [`docs/superpowers/plans/`](./docs/superpo
 git clone git@github.com:vaibhav0806/era.git
 cd era
 cp .env.example .env
-# Edit .env and fill in all five values
+# Edit .env and fill in all six required values (PI_OPENROUTER_API_KEY is M1)
 
-docker build -t era-runner:m0 docker/runner/
-make build
+make docker-runner    # builds bin/era-runner-linux + era-runner:m1 image (~600MB)
+make build            # builds bin/orchestrator
 ./bin/orchestrator
 ```
 
 On startup you should see:
 ```
 ... OK   0001_init.sql (xx ms)
-... goose: successfully migrated database to version: 1
-... INFO orchestrator ready version=0.0.1-m0 db_path=... sandbox_repo=...
+... OK   0002_add_cost_columns.sql (xx ms)
+... goose: successfully migrated database to version: 2
+... INFO orchestrator ready version=... db_path=... sandbox_repo=...
 ```
 
 ## Telegram commands
