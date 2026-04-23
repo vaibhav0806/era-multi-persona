@@ -19,6 +19,7 @@ type Querier interface {
 	ListTasksBetween(ctx context.Context, arg ListTasksBetweenParams) ([]Task, error)
 	MarkTaskCompleted(ctx context.Context, arg MarkTaskCompletedParams) error
 	MarkTaskFailed(ctx context.Context, arg MarkTaskFailedParams) error
+	SetPRNumber(ctx context.Context, arg SetPRNumberParams) error
 	SetTaskStatus(ctx context.Context, arg SetTaskStatusParams) error
 }
 

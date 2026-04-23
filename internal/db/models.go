@@ -39,4 +39,5 @@ type Task struct {
 	StartedAt   sql.NullTime   `json:"started_at"`
 	FinishedAt  sql.NullTime   `json:"finished_at"`
 	TargetRepo  string         `json:"target_repo"`
+	PrNumber    sql.NullInt64  `json:"pr_number"`
 }

@@ -79,3 +79,7 @@ func (r *Repo) ListBetween(ctx context.Context, from, to time.Time) ([]Task, err
 		CreatedAt_2: to.UTC(),
 	})
 }
+
+func (r *Repo) SetPRNumber(ctx context.Context, id, pr int64) error {
+	return r.q.SetPRNumber(ctx, SetPRNumberParams{PrNumber: sql.NullInt64{Int64: pr, Valid: true}, ID: id})
+}

@@ -43,3 +43,6 @@ UPDATE tasks SET status = ? WHERE id = ?;
 SELECT * FROM tasks
 WHERE created_at >= ? AND created_at < ?
 ORDER BY id ASC;
+
+-- name: SetPRNumber :exec
+UPDATE tasks SET pr_number = ? WHERE id = ?;

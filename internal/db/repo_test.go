@@ -175,3 +175,14 @@ func TestRepo_ListBetween(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, none)
 }
+
+func TestRepo_SetPRNumber_UpdatesColumn(t *testing.T) {
+	repo := openTest(t)
+	task, err := repo.CreateTask(context.Background(), "test task", "")
+	require.NoError(t, err)
+	require.NoError(t, repo.SetPRNumber(context.Background(), task.ID, 42))
+	got, err := repo.GetTask(context.Background(), task.ID)
+	require.NoError(t, err)
+	require.True(t, got.PrNumber.Valid)
+	require.Equal(t, int64(42), got.PrNumber.Int64)
+}
