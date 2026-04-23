@@ -1,6 +1,8 @@
 # Binaries
 /bin/
 /orchestrator
+/runner
+/sidecar
 
 # Local env
 .env
