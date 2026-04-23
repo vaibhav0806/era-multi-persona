@@ -46,3 +46,11 @@ ORDER BY id ASC;
 
 -- name: SetPRNumber :exec
 UPDATE tasks SET pr_number = ? WHERE id = ?;
+
+-- name: ListRunningTaskIDs :many
+SELECT id FROM tasks WHERE status='running';
+
+-- name: MarkRunningTasksFailed :execrows
+UPDATE tasks
+   SET status='failed', error=?, finished_at=CURRENT_TIMESTAMP
+ WHERE status='running';

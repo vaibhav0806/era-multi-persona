@@ -83,3 +83,11 @@ func (r *Repo) ListBetween(ctx context.Context, from, to time.Time) ([]Task, err
 func (r *Repo) SetPRNumber(ctx context.Context, id, pr int64) error {
 	return r.q.SetPRNumber(ctx, SetPRNumberParams{PrNumber: sql.NullInt64{Int64: pr, Valid: true}, ID: id})
 }
+
+func (r *Repo) ListRunningTaskIDs(ctx context.Context) ([]int64, error) {
+	return r.q.ListRunningTaskIDs(ctx)
+}
+
+func (r *Repo) MarkRunningTasksFailed(ctx context.Context, reason string) (int64, error) {
+	return r.q.MarkRunningTasksFailed(ctx, sql.NullString{String: reason, Valid: true})
+}

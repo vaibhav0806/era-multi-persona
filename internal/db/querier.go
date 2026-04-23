@@ -6,6 +6,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
@@ -16,7 +17,9 @@ type Querier interface {
 	GetTask(ctx context.Context, id int64) (Task, error)
 	ListEventsForTask(ctx context.Context, taskID int64) ([]Event, error)
 	ListRecentTasks(ctx context.Context, limit int64) ([]Task, error)
+	ListRunningTaskIDs(ctx context.Context) ([]int64, error)
 	ListTasksBetween(ctx context.Context, arg ListTasksBetweenParams) ([]Task, error)
+	MarkRunningTasksFailed(ctx context.Context, error sql.NullString) (int64, error)
 	MarkTaskCompleted(ctx context.Context, arg MarkTaskCompletedParams) error
 	MarkTaskFailed(ctx context.Context, arg MarkTaskFailedParams) error
 	SetPRNumber(ctx context.Context, arg SetPRNumberParams) error

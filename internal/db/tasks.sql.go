@@ -186,6 +186,33 @@ func (q *Queries) ListRecentTasks(ctx context.Context, limit int64) ([]Task, err
 	return items, nil
 }
 
+const listRunningTaskIDs = `-- name: ListRunningTaskIDs :many
+SELECT id FROM tasks WHERE status='running'
+`
+
+func (q *Queries) ListRunningTaskIDs(ctx context.Context) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, listRunningTaskIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTasksBetween = `-- name: ListTasksBetween :many
 SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number FROM tasks
 WHERE created_at >= ? AND created_at < ?
@@ -232,6 +259,20 @@ func (q *Queries) ListTasksBetween(ctx context.Context, arg ListTasksBetweenPara
 		return nil, err
 	}
 	return items, nil
+}
+
+const markRunningTasksFailed = `-- name: MarkRunningTasksFailed :execrows
+UPDATE tasks
+   SET status='failed', error=?, finished_at=CURRENT_TIMESTAMP
+ WHERE status='running'
+`
+
+func (q *Queries) MarkRunningTasksFailed(ctx context.Context, error sql.NullString) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markRunningTasksFailed, error)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const markTaskCompleted = `-- name: MarkTaskCompleted :exec
