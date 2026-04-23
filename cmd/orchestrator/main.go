@@ -172,11 +172,11 @@ func (n *tgNotifier) NotifyCompleted(ctx context.Context, id int64, repo, branch
 	var msg string
 	if branch == "" {
 		msg = fmt.Sprintf("task #%d: no changes\nsummary: %s\ntokens: %d  cost: $%.2f",
-			id, summary, tokens, float64(costCents)/100.0)
+			id, truncateForTelegram(summary, 3500), tokens, float64(costCents)/100.0)
 	} else {
 		msg = fmt.Sprintf(
 			"task #%d completed\nbranch: %s\nhttps://github.com/%s/tree/%s\nsummary: %s\ntokens: %d  cost: $%.2f",
-			id, branch, repo, branch, summary, tokens, float64(costCents)/100.0,
+			id, branch, repo, branch, truncateForTelegram(summary, 3500), tokens, float64(costCents)/100.0,
 		)
 	}
 	if err := n.client.SendMessage(ctx, n.chatID, msg); err != nil {
