@@ -1,0 +1,2 @@
+# /etc/cron.d/era-backup — runs nightly at 03:00 UTC
+0 3 * * * root /opt/era/deploy/era-backup.sh >> /var/log/era-backup.log 2>&1
