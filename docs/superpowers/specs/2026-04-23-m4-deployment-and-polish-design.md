@@ -98,10 +98,11 @@ The Mac currently runs orchestrator + holds `.env` + GH App PEM + `pi-agent.db`.
 2. `scp .env era@178.105.44.3:/etc/era/env`
 3. `scp ~/Downloads/era-orchestrator.*.private-key.pem era@178.105.44.3:/etc/era/github-app.pem`
 4. `scp pi-agent.db era@178.105.44.3:/opt/era/pi-agent.db`
-5. Update `PI_GITHUB_APP_PRIVATE_KEY_PATH` in the VPS's `/etc/era/env` to `/etc/era/github-app.pem`.
-6. `ssh era@178.105.44.3 'sudo systemctl start era'`
-7. Verify `/list` in Telegram returns prior task history.
-8. After confirming era user SSH works: `ssh root@178.105.44.3 bash /opt/era/deploy/disable-root-ssh.sh`.
+5. On the VPS: `sudo chown era:era /etc/era/env /etc/era/github-app.pem /opt/era/pi-agent.db && sudo chmod 600 /etc/era/env /etc/era/github-app.pem` — scp lands files as the uploading user (era) but chmod resets to 600 to match §3.2's declared permissions.
+6. Update `PI_GITHUB_APP_PRIVATE_KEY_PATH` in the VPS's `/etc/era/env` to `/etc/era/github-app.pem`.
+7. `ssh era@178.105.44.3 'sudo systemctl start era'`
+8. Verify `/list` in Telegram returns prior task history.
+9. After confirming era user SSH works: `ssh root@178.105.44.3 bash /opt/era/deploy/disable-root-ssh.sh`.
 
 SQLite is **scp'd, not rsync'd** — atomic copy-then-move avoids partial-file read during ongoing writes. But orchestrator is already stopped on the Mac by step 1, so the DB is quiescent anyway.
 
@@ -376,16 +377,20 @@ if prErr != nil {
 
 Diff-scan then runs with the same `base` (fixes the hardcoded `"main"` at queue.go:186).
 
+**PR-create failure semantics.** If `prCreator.Create` fails, the task still proceeds through the rest of the pipeline: diff-scan runs, status can become `completed` or `needs_review` normally, and `prURL` is the branch tree URL passed to the notifier. The task does not move to `needs_review` because of the PR failure itself — `needs_review` is a diff-scan outcome, not a GitHub-API outcome. Reject path §6.6 tolerates a null `pr_number` (skips `Close`, still deletes branch).
+
+**Default-branch fallback safety.** The `base = "main"` fallback is correct for every repo the user currently targets (sandbox and trying-something both default to main). If a future target repo defaults to something else AND `DefaultBranch` also fails, the PR would open against a non-existent `main` — GitHub's API returns 422, which is caught by the same `prErr` path (falls back to branch URL). No silent wrong-base PR.
+
 ### 6.5 DB migration 0006
 
 ```sql
 -- +goose Up
 ALTER TABLE tasks ADD COLUMN pr_number INTEGER;
 -- +goose Down
--- irreversible (SQLite)
+SELECT 1;
 ```
 
-New sqlc query `SetPRNumber`. Down migration is a no-op; SQLite can't drop columns pre-3.35, and rollback in prod is not in the trust model anyway.
+New sqlc query `SetPRNumber(id int64, pr_number int64)` — takes a plain int64 because `pr_number` is always assigned once on successful PR creation and never cleared. Column type is `INTEGER NULL` (SQLite default), so sqlc generates the Go field as `sql.NullInt64` for reads. The `SELECT 1;` down-migration matches migrations 0004 and 0005's pattern — goose requires at least one SQL statement under the `-- +goose Down` directive, even for no-op rollbacks.
 
 ### 6.6 Reject path change (`internal/queue/queue.go`)
 
@@ -407,7 +412,7 @@ func (q *Queue) RejectTask(ctx context.Context, id int64) error {
     }
     // 2. Delete branch.
     if t.BranchName.Valid && q.branchDeleter != nil {
-        if err := q.branchDeleter.Delete(ctx, t.TargetRepo, t.BranchName.String); err != nil {
+        if err := q.branchDeleter.DeleteBranch(ctx, t.TargetRepo, t.BranchName.String); err != nil {
             _ = q.repo.AppendEvent(ctx, id, "branch_delete_error", quoteJSON(err.Error()))
         } else {
             _ = q.repo.AppendEvent(ctx, id, "branch_deleted", "{}")
