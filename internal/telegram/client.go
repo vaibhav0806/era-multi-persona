@@ -28,8 +28,8 @@ type CallbackQuery struct {
 type Update struct {
 	UserID   int64
 	ChatID   int64
-	Text     string          // set for text messages; empty for callback updates
-	Callback *CallbackQuery  // set for button-tap updates; nil for text
+	Text     string         // set for text messages; empty for callback updates
+	Callback *CallbackQuery // set for button-tap updates; nil for text
 }
 
 type Client interface {

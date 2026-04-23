@@ -118,7 +118,7 @@ func TestHandler_CallbackQueryDispatched(t *testing.T) {
 	h := NewHandler(fc, ops)
 
 	err := h.Handle(context.Background(), Update{
-		ChatID: 1,
+		ChatID:   1,
 		Callback: &CallbackQuery{ID: "cb1", MessageID: 99, Data: "approve:42"},
 	})
 	require.NoError(t, err)
@@ -136,7 +136,7 @@ func TestHandler_CallbackQuery_OpsError(t *testing.T) {
 	h := NewHandler(fc, ops)
 
 	err := h.Handle(context.Background(), Update{
-		ChatID: 1,
+		ChatID:   1,
 		Callback: &CallbackQuery{ID: "cb2", MessageID: 5, Data: "reject:99"},
 	})
 	// Handler should not return an error — it answered the callback with the error text.
