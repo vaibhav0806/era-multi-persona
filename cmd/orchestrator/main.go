@@ -98,6 +98,12 @@ func main() {
 	q.SetPRCreator(prClient)
 	q.SetKiller(queue.NewDockerKiller())
 
+	if n, err := q.Reconcile(ctx); err != nil {
+		slog.Error("reconcile", "err", err)
+	} else if n > 0 {
+		slog.Warn("reconciled orphan running tasks", "count", n)
+	}
+
 	client, err := telegram.NewClient(cfg.TelegramToken, cfg.TelegramAllowedUserID)
 	if err != nil {
 		fail(err)
