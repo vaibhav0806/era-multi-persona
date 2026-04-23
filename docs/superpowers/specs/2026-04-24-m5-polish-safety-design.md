@@ -114,7 +114,13 @@ install -m 440 /opt/era/deploy/sudoers-era /etc/sudoers.d/era
 visudo -c -f /etc/sudoers.d/era || { echo "bad sudoers"; exit 1; }
 ```
 
-One-time live push for the running VPS: `scp deploy/sudoers-era root@VPS:/tmp/` (wait — root ssh is locked; use era) — actually since `era` can't sudo with password-only (the whole point of this fix), we use the existing narrow `systemctl restart era` clause indirectly via the Hetzner cloud console OR we push the file via `era` user into `/tmp/` then ask ourselves for one-time sudo via Hetzner's recovery console. Simpler: before phase AA starts, we temporarily re-enable root SSH via Hetzner web console, scp+install, then re-disable. Plan documents this carefully.
+One-time live push for the running VPS. The narrow existing sudoers doesn't let era install a new sudoers file, so we need a brief root-SSH window. Three explicit ordered steps (plan writes these out in Phase AA; do not skip the re-disable):
+
+1. Re-enable root SSH via Hetzner web console: console → Rescue/Console → run `sed -i -E 's/^PermitRootLogin no/PermitRootLogin yes/' /etc/ssh/sshd_config && systemctl reload ssh`.
+2. From Mac: `scp deploy/sudoers-era root@178.105.44.3:/tmp/sudoers-era`. Then `ssh root@178.105.44.3 'install -m 440 /tmp/sudoers-era /etc/sudoers.d/era && visudo -c -f /etc/sudoers.d/era && rm /tmp/sudoers-era'`.
+3. **Immediately** re-disable root SSH: `ssh root@178.105.44.3 'bash /opt/era/deploy/disable-root-ssh.sh'`. Verify `ssh root@...` fails and `ssh era@...` still works before closing the phase.
+
+After phase AA ships, all future deploys use the widened sudoers and no longer need the console.
 
 ### 4.3 Chunk 3 — Runner tooling bake (phase AB)
 
@@ -330,7 +336,7 @@ if HasMakefileTest(workspace) {
         slog.Warn("pre-commit test failed", "err", testErr, "out_len", len(out))
         writeResult(os.Stdout, runResult{
             Branch:    "",
-            Summary:   "tests_failed: " + sanitize(truncate(out, 2000)),
+            Summary:   "tests_failed: " + truncate(out, 2000),
             Tokens:    tokens,
             CostCents: int(math.Round(costUSD * 100)),
         })
@@ -342,7 +348,7 @@ if HasMakefileTest(workspace) {
 
 Non-zero runner exit → orchestrator's `RunNext` sees the error → marks task `failed` → DMs the summary. The summary (`tests_failed: <output>`) is truncated to 2000 chars before JSON-encoding via the existing T-0 RESULT pipeline, then truncated again for Telegram DM via `truncateForTelegram(3500)`.
 
-`sanitize` already exists in `cmd/runner/main.go` (strips whitespace into underscores for legacy compatibility; NO LONGER NEEDED for the summary now that we're on JSON RESULT lines — but keeping it for defensive transport). If there's no whitespace-mangling concern, `sanitize` can be dropped from this path.
+**Do NOT wrap the truncated output in `sanitize()`.** `sanitize` maps whitespace to underscores — a leftover from the pre-T-0 space-delimited RESULT line. With the JSON pipeline, newlines + tabs in test output survive the round-trip cleanly, which is what you want for readable failure DMs.
 
 Tests:
 - `cmd/runner/pretest_test.go` — `HasMakefileTest` over fixture workspaces (no Makefile, Makefile-without-test, Makefile-with-test, Makefile-with-test-as-phony); `RunMakefileTest` with a tiny fake Makefile that `@echo ok` → returns empty error, or `@exit 1` → returns error with output.
