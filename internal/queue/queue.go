@@ -82,6 +82,8 @@ type Queue struct {
 	repoFQN       string        // owner/repo for compare lookups
 	branchDeleter BranchDeleter // may be nil
 	prCreator     PRCreator     // may be nil
+	killer        ContainerKiller // may be nil
+	running       *RunningSet     // initialized in New
 }
 
 func New(repo *db.Repo, runner Runner, tokens TokenSource, compare DiffSource, repoFQN string) *Queue {
@@ -91,6 +93,7 @@ func New(repo *db.Repo, runner Runner, tokens TokenSource, compare DiffSource, r
 		tokens:  tokens,
 		compare: compare,
 		repoFQN: repoFQN,
+		running: NewRunningSet(),
 	}
 }
 
@@ -269,6 +272,12 @@ func (q *Queue) SetBranchDeleter(bd BranchDeleter) { q.branchDeleter = bd }
 
 // SetPRCreator attaches a PRCreator to this Queue.
 func (q *Queue) SetPRCreator(p PRCreator) { q.prCreator = p }
+
+// SetKiller attaches a ContainerKiller to this Queue.
+func (q *Queue) SetKiller(k ContainerKiller) { q.killer = k }
+
+// Running returns the RunningSet for this Queue.
+func (q *Queue) Running() *RunningSet { return q.running }
 
 // ApproveTask transitions needs_review → approved. No-op on already-approved.
 // Errors on any other current status.
