@@ -1,5 +1,7 @@
 # era
 
+*Ephemeral runtime agent.*
+
 A personal agent orchestrator that runs tasks via Telegram, executes them in disposable Docker containers, and reports back with a pushed git branch. See [FEATURE.md](./FEATURE.md) for the full vision and design principles.
 
 *era* = **e**phemeral **r**untime **a**gent. Every task spawns a fresh disposable Docker container, does its work, and exits; no state lives longer than a single task run. The name also reflects the intent: this is the chapter where the typing gets delegated and the focus shifts to describing and reviewing. M0 lays down the chassis; later milestones swap in a real coding agent, network allowlisting, and approval gates.
