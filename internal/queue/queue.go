@@ -12,6 +12,7 @@ import (
 	"github.com/vaibhav0806/era/internal/audit"
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
+	"github.com/vaibhav0806/era/internal/githubpr"
 	"github.com/vaibhav0806/era/internal/telegram"
 )
 
@@ -64,6 +65,14 @@ type BranchDeleter interface {
 	DeleteBranch(ctx context.Context, repo, branch string) error
 }
 
+// PRCreator opens/closes GitHub pull requests. Implemented by internal/githubpr.
+// Optional: nil creator means the queue skips PR creation.
+type PRCreator interface {
+	Create(ctx context.Context, args githubpr.CreateArgs) (*githubpr.PR, error)
+	Close(ctx context.Context, repo string, number int) error
+	DefaultBranch(ctx context.Context, repo string) (string, error)
+}
+
 type Queue struct {
 	repo          *db.Repo
 	runner        Runner
@@ -72,6 +81,7 @@ type Queue struct {
 	compare       DiffSource    // may be nil
 	repoFQN       string        // owner/repo for compare lookups
 	branchDeleter BranchDeleter // may be nil
+	prCreator     PRCreator     // may be nil
 }
 
 func New(repo *db.Repo, runner Runner, tokens TokenSource, compare DiffSource, repoFQN string) *Queue {
@@ -226,6 +236,9 @@ func quoteJSON(s string) string {
 
 // SetBranchDeleter attaches a BranchDeleter to this Queue.
 func (q *Queue) SetBranchDeleter(bd BranchDeleter) { q.branchDeleter = bd }
+
+// SetPRCreator attaches a PRCreator to this Queue.
+func (q *Queue) SetPRCreator(p PRCreator) { q.prCreator = p }
 
 // ApproveTask transitions needs_review → approved. No-op on already-approved.
 // Errors on any other current status.
