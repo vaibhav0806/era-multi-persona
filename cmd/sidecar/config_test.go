@@ -34,3 +34,11 @@ func TestSidecarConfig_TavilyMissingOK(t *testing.T) {
 	require.NoError(t, err) // not required
 	require.Equal(t, "", c.TavilyAPIKey)
 }
+
+func TestSidecarConfig_OpenRouterOptional(t *testing.T) {
+	t.Setenv("PI_SIDECAR_LISTEN_ADDR", "127.0.0.1:8080")
+	t.Setenv("PI_SIDECAR_OPENROUTER_API_KEY", "sk-or-v1-abc")
+	c, err := loadSidecarConfig()
+	require.NoError(t, err)
+	require.Equal(t, "sk-or-v1-abc", c.OpenRouterAPIKey)
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,7 @@ func newServer(cfg *sidecarConfig) *http.Server {
 	}
 	searchHandler := newSearchHandler("", cfg.TavilyAPIKey, allow)
 	fetchHandler := newFetchHandler(allow)
+	llmHandler := newLLMHandler("", cfg.OpenRouterAPIKey)
 	proxy := newProxyHandler(allow)
 
 	// Route manually instead of using http.ServeMux. Go 1.22+ ServeMux
@@ -41,6 +43,10 @@ func newServer(cfg *sidecarConfig) *http.Server {
 		case "/fetch":
 			fetchHandler.ServeHTTP(w, r)
 		default:
+			if strings.HasPrefix(r.URL.Path, "/llm/") {
+				llmHandler.ServeHTTP(w, r)
+				return
+			}
 			proxy.ServeHTTP(w, r)
 		}
 	})
