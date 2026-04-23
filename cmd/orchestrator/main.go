@@ -197,6 +197,13 @@ func (n *tgNotifier) NotifyFailed(ctx context.Context, id int64, reason string) 
 	}
 }
 
+func (n *tgNotifier) NotifyCancelled(ctx context.Context, id int64) {
+	msg := fmt.Sprintf("task #%d cancelled", id)
+	if err := n.client.SendMessage(ctx, n.chatID, msg); err != nil {
+		slog.Error("notify cancelled", "err", err, "task", id)
+	}
+}
+
 func (n *tgNotifier) NotifyNeedsReview(ctx context.Context, a queue.NeedsReviewArgs) {
 	body := formatNeedsReviewMessage(a)
 

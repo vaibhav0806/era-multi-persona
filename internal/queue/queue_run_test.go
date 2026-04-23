@@ -193,6 +193,7 @@ type fakeNotifier struct {
 	completed   []completedArgs
 	failed      []failedArgs
 	needsReview []needsReviewArgs
+	cancelled   []int64
 }
 
 func (f *fakeNotifier) NotifyCompleted(ctx context.Context, id int64, repo, b, prURL, s string, t int64, c int) {
@@ -212,6 +213,10 @@ func (f *fakeNotifier) NotifyNeedsReview(ctx context.Context, a queue.NeedsRevie
 		Diffs:     a.Diffs,
 		PRURL:     a.PRURL,
 	})
+}
+
+func (f *fakeNotifier) NotifyCancelled(ctx context.Context, id int64) {
+	f.cancelled = append(f.cancelled, id)
 }
 
 var _ queue.Notifier = (*fakeNotifier)(nil)
@@ -619,6 +624,25 @@ func TestQueue_RunNext_PassesEffectiveRepo_FromTask(t *testing.T) {
 	_, err = q.RunNext(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "alice/bob", fr.lastRepo, "runner should receive task.TargetRepo, not default")
+}
+
+func TestQueue_RunNext_KilledTask_WritesCancelled(t *testing.T) {
+	ctx := context.Background()
+	fr := &fakeRunner{err: errors.New("exit status 137")}
+	q, repo := newRunQueue(t, fr)
+	n := &fakeNotifier{}
+	q.SetNotifier(n)
+
+	task, _ := repo.CreateTask(ctx, "x", "")
+	q.Running().MarkKilled(task.ID) // simulate /cancel already fired
+
+	_, err := q.RunNext(ctx)
+	require.NoError(t, err)
+
+	got, _ := repo.GetTask(ctx, task.ID)
+	require.Equal(t, "cancelled", got.Status)
+	require.Equal(t, []int64{task.ID}, n.cancelled)
+	require.Len(t, n.failed, 0, "NotifyFailed must NOT be called for killed tasks")
 }
 
 func TestQueue_RunNext_FallsBackToDefaultRepo(t *testing.T) {

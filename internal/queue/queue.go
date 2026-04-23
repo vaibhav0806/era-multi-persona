@@ -56,6 +56,7 @@ type Notifier interface {
 	NotifyCompleted(ctx context.Context, taskID int64, repo, branch, prURL, summary string, tokens int64, costCents int)
 	NotifyFailed(ctx context.Context, taskID int64, reason string)
 	NotifyNeedsReview(ctx context.Context, args NeedsReviewArgs)
+	NotifyCancelled(ctx context.Context, taskID int64)
 }
 
 // BranchDeleter deletes a remote branch. Implemented by internal/githubbranch
@@ -175,6 +176,16 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 
 	branch, summary, tokens, costCents, audits, runErr := q.runner.Run(ctx, t.ID, t.Description, ghToken, effectiveRepo)
 	if runErr != nil {
+		if q.running != nil && q.running.WasKilled(t.ID) {
+			_ = q.repo.AppendEvent(ctx, t.ID, "cancelled", "{}")
+			if err := q.repo.SetStatus(ctx, t.ID, "cancelled"); err != nil {
+				return true, fmt.Errorf("set cancelled: %w", err)
+			}
+			if q.notifier != nil {
+				q.notifier.NotifyCancelled(ctx, t.ID)
+			}
+			return true, nil
+		}
 		_ = q.repo.AppendEvent(ctx, t.ID, "failed", quoteJSON(runErr.Error()))
 		if ferr := q.repo.FailTask(ctx, t.ID, runErr.Error()); ferr != nil {
 			return true, fmt.Errorf("fail task: %w (original: %v)", ferr, runErr)
