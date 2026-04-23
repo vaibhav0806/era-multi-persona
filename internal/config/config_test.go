@@ -119,3 +119,42 @@ func TestLoad_MissingPrivateKey(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "PI_GITHUB_APP_PRIVATE_KEY")
 }
+
+func TestLoad_DigestTimeDefault(t *testing.T) {
+	setRequiredEnv(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "17:30", cfg.DigestTimeUTC)
+}
+
+func TestLoad_DigestTimeCustom(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("PI_DIGEST_TIME_UTC", "08:15")
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "08:15", cfg.DigestTimeUTC)
+}
+
+func TestLoad_DigestTimeMalformed(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("PI_DIGEST_TIME_UTC", "not-a-time")
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "PI_DIGEST_TIME_UTC")
+}
+
+func TestParseDigestTime(t *testing.T) {
+	h, m, err := ParseDigestTime("17:30")
+	require.NoError(t, err)
+	require.Equal(t, 17, h)
+	require.Equal(t, 30, m)
+}
+
+func TestParseDigestTime_Bad(t *testing.T) {
+	_, _, err := ParseDigestTime("25:00")
+	require.Error(t, err)
+	_, _, err = ParseDigestTime("12")
+	require.Error(t, err)
+	_, _, err = ParseDigestTime("12:60")
+	require.Error(t, err)
+}

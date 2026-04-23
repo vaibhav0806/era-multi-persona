@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/vaibhav0806/era/internal/db"
@@ -133,4 +134,26 @@ func TestRepo_SetStatus_RejectsInvalid(t *testing.T) {
 	// The tasks.status CHECK constraint rejects arbitrary strings.
 	err := r.SetStatus(ctx, task.ID, "nonsense")
 	require.Error(t, err)
+}
+
+func TestRepo_ListBetween(t *testing.T) {
+	ctx := context.Background()
+	r := openTest(t)
+
+	// Seed three tasks
+	_, _ = r.CreateTask(ctx, "a")
+	_, _ = r.CreateTask(ctx, "b")
+	_, _ = r.CreateTask(ctx, "c")
+
+	now := time.Now().UTC()
+
+	// Full window returns all
+	all, err := r.ListBetween(ctx, now.Add(-time.Hour), now.Add(time.Hour))
+	require.NoError(t, err)
+	require.Len(t, all, 3)
+
+	// Empty window returns none
+	none, err := r.ListBetween(ctx, now.Add(-2*time.Hour), now.Add(-time.Hour))
+	require.NoError(t, err)
+	require.Empty(t, none)
 }

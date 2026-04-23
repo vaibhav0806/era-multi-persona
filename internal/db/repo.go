@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 var ErrNoTasks = errors.New("no queued tasks")
@@ -67,4 +68,11 @@ func (r *Repo) ListRecent(ctx context.Context, limit int) ([]Task, error) {
 
 func (r *Repo) SetStatus(ctx context.Context, id int64, status string) error {
 	return r.q.SetTaskStatus(ctx, SetTaskStatusParams{Status: status, ID: id})
+}
+
+func (r *Repo) ListBetween(ctx context.Context, from, to time.Time) ([]Task, error) {
+	return r.q.ListTasksBetween(ctx, ListTasksBetweenParams{
+		CreatedAt:   from.UTC(),
+		CreatedAt_2: to.UTC(),
+	})
 }

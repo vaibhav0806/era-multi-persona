@@ -38,3 +38,8 @@ SELECT * FROM events WHERE task_id = ? ORDER BY created_at ASC;
 
 -- name: SetTaskStatus :exec
 UPDATE tasks SET status = ? WHERE id = ?;
+
+-- name: ListTasksBetween :many
+SELECT * FROM tasks
+WHERE created_at >= ? AND created_at < ?
+ORDER BY id ASC;

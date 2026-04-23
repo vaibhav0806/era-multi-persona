@@ -15,6 +15,7 @@ import (
 	"github.com/vaibhav0806/era/internal/config"
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
+	"github.com/vaibhav0806/era/internal/digest"
 	"github.com/vaibhav0806/era/internal/githubapp"
 	"github.com/vaibhav0806/era/internal/githubbranch"
 	"github.com/vaibhav0806/era/internal/githubcompare"
@@ -106,6 +107,9 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
+
+	hour, minute, _ := config.ParseDigestTime(cfg.DigestTimeUTC)
+	go runDigestScheduler(ctx, hour, minute, repo, client, cfg.TelegramAllowedUserID)
 
 	// Task-execution loop: poll the queue and run one task per tick.
 	go func() {
@@ -264,3 +268,36 @@ func truncate(s string, n int) string {
 
 // compile-time assertion that tgNotifier satisfies queue.Notifier
 var _ queue.Notifier = (*tgNotifier)(nil)
+
+// runDigestScheduler fires once per day at hour:minute UTC and sends a
+// digest message to chatID. Respects ctx for graceful shutdown.
+func runDigestScheduler(ctx context.Context, hour, minute int, repo *db.Repo, client telegram.Client, chatID int64) {
+	for {
+		now := time.Now().UTC()
+		next := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, time.UTC)
+		if !next.After(now) {
+			next = next.Add(24 * time.Hour)
+		}
+		wait := time.Until(next)
+		slog.Info("digest scheduled", "fires_at_utc", next.Format(time.RFC3339), "in", wait.String())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		// Fire: fetch last 24h, render, send.
+		to := time.Now().UTC()
+		from := to.Add(-24 * time.Hour)
+		tasks, err := repo.ListBetween(ctx, from, to)
+		if err != nil {
+			slog.Error("digest listbetween", "err", err)
+			continue
+		}
+		msg := digest.Render(tasks, from, to)
+		if err := client.SendMessage(ctx, chatID, msg); err != nil {
+			slog.Error("digest send", "err", err)
+			continue
+		}
+		slog.Info("digest sent", "tasks", len(tasks))
+	}
+}

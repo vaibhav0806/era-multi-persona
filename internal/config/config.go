@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -26,6 +27,9 @@ type Config struct {
 	GitHubAppID               int64
 	GitHubAppInstallationID   int64
 	GitHubAppPrivateKeyBase64 string
+
+	// M3-18: daily digest schedule. "HH:MM" 24h UTC. Default "17:30" = 11 PM IST.
+	DigestTimeUTC string
 }
 
 const (
@@ -100,8 +104,34 @@ func Load() (*Config, error) {
 		return nil, errors.New("PI_GITHUB_APP_PRIVATE_KEY is required")
 	}
 
+	c.DigestTimeUTC = defOrEnv("PI_DIGEST_TIME_UTC", "17:30")
+	if _, _, err := parseDigestTime(c.DigestTimeUTC); err != nil {
+		return nil, fmt.Errorf("PI_DIGEST_TIME_UTC: %w", err)
+	}
+
 	return c, nil
 }
+
+// ParseDigestTime parses "HH:MM" and returns hours + minutes (0-23, 0-59).
+// Exported for main.go use.
+func ParseDigestTime(s string) (hour, minute int, err error) {
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("expected HH:MM, got %q", s)
+	}
+	h, err := strconv.Atoi(parts[0])
+	if err != nil || h < 0 || h > 23 {
+		return 0, 0, fmt.Errorf("bad hour %q", parts[0])
+	}
+	m, err := strconv.Atoi(parts[1])
+	if err != nil || m < 0 || m > 59 {
+		return 0, 0, fmt.Errorf("bad minute %q", parts[1])
+	}
+	return h, m, nil
+}
+
+// parseDigestTime is the internal-use alias used in Load().
+func parseDigestTime(s string) (int, int, error) { return ParseDigestTime(s) }
 
 func defOrEnv(key, def string) string {
 	if v := os.Getenv(key); v != "" {

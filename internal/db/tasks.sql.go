@@ -8,6 +8,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 const appendEvent = `-- name: AppendEvent :exec
@@ -139,6 +140,52 @@ SELECT id, description, status, branch_name, summary, error, tokens_used, cost_c
 
 func (q *Queries) ListRecentTasks(ctx context.Context, limit int64) ([]Task, error) {
 	rows, err := q.db.QueryContext(ctx, listRecentTasks, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Task
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.Description,
+			&i.Status,
+			&i.BranchName,
+			&i.Summary,
+			&i.Error,
+			&i.TokensUsed,
+			&i.CostCents,
+			&i.CreatedAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTasksBetween = `-- name: ListTasksBetween :many
+SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at FROM tasks
+WHERE created_at >= ? AND created_at < ?
+ORDER BY id ASC
+`
+
+type ListTasksBetweenParams struct {
+	CreatedAt   time.Time `json:"created_at"`
+	CreatedAt_2 time.Time `json:"created_at_2"`
+}
+
+func (q *Queries) ListTasksBetween(ctx context.Context, arg ListTasksBetweenParams) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, listTasksBetween, arg.CreatedAt, arg.CreatedAt_2)
 	if err != nil {
 		return nil, err
 	}

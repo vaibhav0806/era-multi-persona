@@ -16,6 +16,7 @@ type Querier interface {
 	GetTask(ctx context.Context, id int64) (Task, error)
 	ListEventsForTask(ctx context.Context, taskID int64) ([]Event, error)
 	ListRecentTasks(ctx context.Context, limit int64) ([]Task, error)
+	ListTasksBetween(ctx context.Context, arg ListTasksBetweenParams) ([]Task, error)
 	MarkTaskCompleted(ctx context.Context, arg MarkTaskCompletedParams) error
 	MarkTaskFailed(ctx context.Context, arg MarkTaskFailedParams) error
 	SetTaskStatus(ctx context.Context, arg SetTaskStatusParams) error
