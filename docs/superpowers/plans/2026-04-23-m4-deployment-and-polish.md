@@ -12,20 +12,30 @@
 
 **Testing philosophy:** Strict TDD. Fail-first tests before implementation. `go test -race -count=1 ./...` must be green before every commit. Per-phase smoke script + live Telegram smoke gates the next phase. We do not build blindly.
 
+**Prerequisites (check before starting):**
+- `sqlc` v2 installed: `which sqlc` should resolve. If not: `go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest`.
+- Docker running locally for phase W smoke (optional, behind `DOCKER_E2E=1` env gate).
+- VPS already provisioned at `178.105.44.3`, root SSH key works (covered in brainstorm — not a plan task).
+
 ---
 
 ## File Structure
 
 ```
 cmd/runner/
+├── result.go                    MODIFY — switch RESULT line to JSON so Pi prose survives whitespace
+├── result_test.go               MODIFY — update golden tests for new JSON format
 ├── events.go                    MODIFY — extend piEvent (Role, Content[])
 ├── events_test.go               MODIFY — fixture-based Content parsing tests
 ├── pi.go                        MODIFY — runSummary.LastText, track in stream
 ├── pi_test.go                   MODIFY — LastText tracking tests
 ├── main.go                      MODIFY — use LastText, drop piSummary helper
-├── main_test.go                 MODIFY — golden tests for result JSON
 └── testdata/
     └── message_end_with_text.jsonl   CREATE — fixture event
+
+internal/runner/
+├── docker.go                    MODIFY — ParseResult switches to JSON decode; --name/ContainerName field added to RunInput
+└── docker_test.go               MODIFY — assert ContainerName wired through to argv
 
 cmd/orchestrator/
 ├── main.go                      MODIFY — truncateForTelegram, PR URL plumbing, Reconcile call, killer wiring, NotifyCancelled
@@ -47,9 +57,7 @@ internal/queue/
 ├── reconcile.go                 CREATE — Reconcile func for startup
 └── reconcile_test.go            CREATE — running→failed transition tests
 
-internal/runner/
-├── docker.go                    MODIFY — --name flag, container-name callback
-└── docker_test.go               MODIFY — assert --name in argv
+(internal/runner/ already listed above — no duplicate)
 
 migrations/
 └── 0006_pr_number.sql           CREATE — ALTER TABLE tasks ADD pr_number
@@ -84,6 +92,146 @@ README.md                         MODIFY — mention VPS deployment in Y
 # Phase T — Read-only answer path
 
 **Goal:** Capture Pi's last assistant text in the runner and surface it as the summary in DMs, replacing `"no_changes"` and `"ok_tokens=…"` hardcoded strings.
+
+**Serialization prerequisite (T-0):** The current runner→orchestrator protocol uses a single `RESULT branch=... summary=... tokens=... cost_cents=...` line, space-delimited, with whitespace in `summary` mapped to underscores (see `cmd/runner/result.go:20-29`, parsed by `strings.Fields` in `internal/runner/docker.go:138`). This works only for the synthetic `ok_tokens=X_cost=Y` / `no_changes` tags we're removing. Pi's actual prose — full sentences with spaces — would arrive in the orchestrator as `Here_is_what_I_found_in_the_README`. Before any LastText work, we switch the RESULT line to one-line JSON so arbitrary text (including newlines) survives the round-trip.
+
+## Task T-0: Switch RESULT line to JSON
+
+**Files:**
+- Modify: `cmd/runner/result.go`
+- Modify: `cmd/runner/result_test.go`
+- Modify: `internal/runner/docker.go`
+- Modify: `internal/runner/docker_test.go` (if it asserts on RESULT line format)
+
+- [ ] **Step 1: Write the failing test.**
+
+In `cmd/runner/result_test.go`, replace the existing expected-format assertion with:
+
+```go
+func TestWriteResult_EmitsJSONLine(t *testing.T) {
+	var buf bytes.Buffer
+	writeResult(&buf, runResult{
+		Branch:    "agent/1/foo",
+		Summary:   "Pi's answer with spaces\nand a newline",
+		Tokens:    42,
+		CostCents: 7,
+	})
+	line := buf.String()
+	require.True(t, strings.HasPrefix(line, "RESULT "), "line must start with RESULT marker: %q", line)
+	require.True(t, strings.HasSuffix(line, "\n"), "line must end with newline")
+	payload := strings.TrimSuffix(strings.TrimPrefix(line, "RESULT "), "\n")
+	var got runResult
+	require.NoError(t, json.Unmarshal([]byte(payload), &got))
+	require.Equal(t, "agent/1/foo", got.Branch)
+	require.Equal(t, "Pi's answer with spaces\nand a newline", got.Summary)
+	require.Equal(t, int64(42), got.Tokens)
+	require.Equal(t, 7, got.CostCents)
+}
+```
+
+- [ ] **Step 2: Verify fail.**
+
+```
+go test -run TestWriteResult_EmitsJSONLine ./cmd/runner/
+```
+
+Expected: FAIL — current impl emits space-delimited key=value.
+
+- [ ] **Step 3: Rewrite `writeResult`.**
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+)
+
+type runResult struct {
+	Branch    string `json:"branch"`
+	Summary   string `json:"summary"`
+	Tokens    int64  `json:"tokens"`
+	CostCents int    `json:"cost_cents"`
+}
+
+func writeResult(w io.Writer, r runResult) {
+	payload, err := json.Marshal(r)
+	if err != nil {
+		// runResult is plain and always marshals; this branch is defensive.
+		fmt.Fprintf(w, "RESULT {\"branch\":\"\",\"summary\":\"marshal_error\",\"tokens\":0,\"cost_cents\":0}\n")
+		return
+	}
+	fmt.Fprintf(w, "RESULT %s\n", payload)
+}
+```
+
+Delete the `"strings"` import and the rune-mapping logic.
+
+- [ ] **Step 4: Rewrite `ParseResult` in `internal/runner/docker.go:127-158`.**
+
+```go
+func ParseResult(r io.Reader) (*RunOutput, error) {
+    sc := bufio.NewScanner(r)
+    sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+    for sc.Scan() {
+        line := sc.Text()
+        if !strings.HasPrefix(line, "RESULT ") {
+            continue
+        }
+        payload := strings.TrimPrefix(line, "RESULT ")
+        var out RunOutput
+        if err := json.Unmarshal([]byte(payload), &out); err != nil {
+            return nil, fmt.Errorf("parse RESULT json: %w; raw=%q", err, payload)
+        }
+        return &out, nil
+    }
+    if err := sc.Err(); err != nil {
+        return nil, fmt.Errorf("scan: %w", err)
+    }
+    return nil, ErrNoResult
+}
+```
+
+Add JSON tags to `RunOutput` struct (same tags as `runResult`):
+
+```go
+type RunOutput struct {
+    Branch    string `json:"branch"`
+    Summary   string `json:"summary"`
+    Tokens    int64  `json:"tokens"`
+    CostCents int    `json:"cost_cents"`
+}
+```
+
+Add `"encoding/json"` import if missing.
+
+- [ ] **Step 5: Update `internal/runner/docker_test.go`.**
+
+Find any existing test that asserts on `RESULT branch=...` line and change it to:
+
+```go
+// Example: if the test provides a canned combined log containing the RESULT line
+combined := strings.NewReader(`RESULT {"branch":"foo","summary":"hello world","tokens":100,"cost_cents":5}` + "\n")
+out, err := ParseResult(combined)
+require.NoError(t, err)
+require.Equal(t, "hello world", out.Summary)
+```
+
+- [ ] **Step 6: Verify.**
+
+```
+go test -race -count=1 ./cmd/runner/ ./internal/runner/
+```
+
+Expected: all green.
+
+- [ ] **Step 7: Commit.**
+
+```bash
+git add cmd/runner/result.go cmd/runner/result_test.go internal/runner/docker.go internal/runner/docker_test.go
+git commit -m "feat(runner): RESULT line switches to JSON so prose summaries survive round-trip"
+```
 
 ## Task T-1: Extend `piEvent` to parse assistant content blocks
 
@@ -197,7 +345,7 @@ func TestRunPi_TracksLastAssistantText(t *testing.T) {
 		`{"type":"agent_end"}`,
 	}, "\n")
 	p := &fakePi{stdout: strings.NewReader(jsonl)}
-	obs := &noopObserver{}
+	obs := nopObserver{}
 	s, err := runPi(context.Background(), p, obs)
 	require.NoError(t, err)
 	require.Equal(t, "final answer wins", s.LastText)
@@ -210,13 +358,13 @@ func TestRunPi_LastTextEmptyWhenNoAssistantMessage(t *testing.T) {
 		`{"type":"agent_end"}`,
 	}, "\n")
 	p := &fakePi{stdout: strings.NewReader(jsonl)}
-	s, err := runPi(context.Background(), p, &noopObserver{})
+	s, err := runPi(context.Background(), p, nopObserver{})
 	require.NoError(t, err)
 	require.Equal(t, "", s.LastText)
 }
 ```
 
-If `fakePi` and `noopObserver` don't exist, check the top of `pi_test.go` for the existing harness name and reuse it. Add imports as needed: `"strings"`, `"context"`, `"github.com/stretchr/testify/require"`.
+If `fakePi` and `nopObserver` don't exist, check the top of `pi_test.go` for the existing harness name and reuse it. Add imports as needed: `"strings"`, `"context"`, `"github.com/stretchr/testify/require"`.
 
 - [ ] **Step 2: Run to verify fail.**
 
@@ -289,49 +437,39 @@ git commit -m "feat(runner): track last assistant text in runSummary"
 
 **Files:**
 - Modify: `cmd/runner/main.go`
-- Modify: `cmd/runner/main_test.go` (may need to create if absent — verify with `ls`)
+- Modify: `cmd/runner/result_test.go` (extend for the finalSummary helper)
 
-- [ ] **Step 1: Write the failing test.**
+- [ ] **Step 1: Write the failing tests.**
 
-In `cmd/runner/main_test.go` (create if missing), add tests asserting the JSON result written to stdout uses LastText:
+In `cmd/runner/result_test.go`, add:
 
 ```go
-func TestWriteResult_UsesLastTextOnSuccess(t *testing.T) {
-	var buf bytes.Buffer
-	writeResult(&buf, runResult{
-		Branch:    "agent/1/foo",
-		Summary:   "Pi's actual answer text",
-		Tokens:    100,
-		CostCents: 5,
-	})
-	var got runResult
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
-	require.Equal(t, "Pi's actual answer text", got.Summary)
-	require.Equal(t, "agent/1/foo", got.Branch)
+func TestFinalSummary_UsesLastTextWhenPresent(t *testing.T) {
+	s := &runSummary{LastText: "Pi said something useful"}
+	require.Equal(t, "Pi said something useful", finalSummary(s, nil))
 }
 
-func TestWriteResult_UsesLastTextOnNoChanges(t *testing.T) {
-	var buf bytes.Buffer
-	writeResult(&buf, runResult{
-		Branch:    "",
-		Summary:   "I read the README. It says foo.",
-		Tokens:    50,
-		CostCents: 2,
-	})
-	var got runResult
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
-	require.Equal(t, "", got.Branch)
-	require.Equal(t, "I read the README. It says foo.", got.Summary)
+func TestFinalSummary_FallsBackWhenEmpty(t *testing.T) {
+	s := &runSummary{}
+	require.Equal(t, "(no final message from pi)", finalSummary(s, nil))
+}
+
+func TestFinalSummary_Aborted(t *testing.T) {
+	s := &runSummary{LastText: "should be ignored"}
+	got := finalSummary(s, errors.New("wall clock cap fired"))
+	require.Contains(t, got, "aborted_")
 }
 ```
 
-- [ ] **Step 2: Run to verify.** (if `writeResult` already exists, this test just pins behaviour we're about to rely on.)
+Add imports if missing: `"errors"`, `"github.com/stretchr/testify/require"`.
+
+- [ ] **Step 2: Verify fail.**
 
 ```
-go test -run TestWriteResult_ ./cmd/runner/
+go test -run TestFinalSummary_ ./cmd/runner/
 ```
 
-Expected: PASS (this is a pinning test — no new code needed yet).
+Expected: FAIL — `finalSummary` symbol not defined (current helper is `piSummary`).
 
 - [ ] **Step 3: Change the call sites to use `LastText`.**
 
@@ -401,12 +539,12 @@ Delete the old `piSummary` helper.
 go test -race ./cmd/runner/
 ```
 
-Expected: all green (existing golden tests if any will show the new summary format — verify and adjust any fixtures.).
+Expected: all green. If earlier golden tests asserted the old `ok_tokens=...` format, update them to assert Pi's LastText is now present.
 
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add cmd/runner/main.go cmd/runner/main_test.go
+git add cmd/runner/main.go cmd/runner/result_test.go
 git commit -m "feat(runner): emit pi's last text as result summary, drop no_changes/ok_tokens strings"
 ```
 
@@ -426,11 +564,12 @@ package main
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 )
 
-func TestTruncateForTelegram(t *testing.T) {
+func TestTruncateForTelegram_AsciiCases(t *testing.T) {
 	tests := []struct {
 		name   string
 		in     string
@@ -439,7 +578,7 @@ func TestTruncateForTelegram(t *testing.T) {
 	}{
 		{"under budget", "hello", 100, "hello"},
 		{"exactly at budget", strings.Repeat("a", 50), 50, strings.Repeat("a", 50)},
-		{"over budget", strings.Repeat("a", 60), 50, strings.Repeat("a", 50) + "\n…(10 chars truncated)"},
+		{"over budget", strings.Repeat("a", 60), 50, strings.Repeat("a", 50) + "\n…(10 bytes truncated)"},
 		{"empty", "", 100, ""},
 	}
 	for _, tc := range tests {
@@ -451,13 +590,19 @@ func TestTruncateForTelegram(t *testing.T) {
 }
 
 func TestTruncateForTelegram_UnicodeSafe(t *testing.T) {
-	// 3-byte rune × 20 = 60 bytes. Budget 50 should NOT split a rune.
+	// 3-byte rune × 20 = 60 bytes. Budget 50 should cut at a rune boundary.
 	s := strings.Repeat("€", 20)
 	got := truncateForTelegram(s, 50)
-	// Result must parse cleanly as valid UTF-8. Check by re-encoding.
-	require.True(t, len(got) >= 50 || strings.HasPrefix(s, got[:len(got)-len("\n…(10 chars truncated)")]))
+	// Strip footer to get just the truncated prefix.
+	prefix := got
+	if idx := strings.Index(got, "\n…("); idx >= 0 {
+		prefix = got[:idx]
+	}
+	require.True(t, utf8.ValidString(prefix), "truncated prefix must be valid UTF-8: %q", prefix)
+	require.True(t, strings.HasPrefix(s, prefix), "prefix must be a prefix of input")
+	// Budget 50 with 3-byte runes → 16 complete runes = 48 bytes kept.
+	require.LessOrEqual(t, len(prefix), 50)
 }
-```
 
 - [ ] **Step 2: Run to verify fail.**
 
@@ -473,18 +618,19 @@ In `cmd/orchestrator/main.go`, add near the other helpers:
 
 ```go
 // truncateForTelegram caps s at `budget` bytes, appending a rune-safe footer
-// if anything was dropped. We truncate by bytes to stay under Telegram's 4096
-// limit, then back up to the last rune boundary.
+// if anything was dropped. Backs up past any partial multi-byte rune so the
+// returned prefix is always valid UTF-8.
 func truncateForTelegram(s string, budget int) string {
     if len(s) <= budget {
         return s
     }
     cut := budget
-    // Back up to nearest rune boundary.
-    for cut > 0 && (s[cut]&0xC0) == 0x80 {
+    // If s[cut] is a continuation byte (0b10xxxxxx), we're mid-rune.
+    // Back up until cut sits at a rune-start boundary.
+    for cut > 0 && cut < len(s) && (s[cut]&0xC0) == 0x80 {
         cut--
     }
-    return s[:cut] + fmt.Sprintf("\n…(%d chars truncated)", len(s)-cut)
+    return s[:cut] + fmt.Sprintf("\n…(%d bytes truncated)", len(s)-cut)
 }
 ```
 
@@ -640,7 +786,7 @@ type fakeTokens struct{ tok string }
 func (f *fakeTokens) InstallationToken(ctx context.Context) (string, error) { return f.tok, nil }
 
 func TestNew_DefaultsPopulated(t *testing.T) {
-	c := githubpr.New(&fakeTokens{tok: "ghs_xxx"}, nil)
+	c := githubpr.New("", &fakeTokens{tok: "ghs_xxx"})
 	require.NotNil(t, c)
 }
 ```
@@ -674,19 +820,18 @@ type Client struct {
 	baseURL string // overridable for tests
 }
 
-func New(tokens TokenSource, httpClient *http.Client) *Client {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+// New mirrors the sibling sister packages' shape: baseURL first (empty = default),
+// then the token source. Uses a pkg-level default *http.Client.
+func New(baseURL string, tokens TokenSource) *Client {
+	if baseURL == "" {
+		baseURL = "https://api.github.com"
 	}
 	return &Client{
 		tokens:  tokens,
-		http:    httpClient,
-		baseURL: "https://api.github.com",
+		http:    &http.Client{Timeout: 30 * time.Second},
+		baseURL: baseURL,
 	}
 }
-
-// SetBaseURL overrides the GitHub API base URL. For tests only.
-func (c *Client) SetBaseURL(u string) { c.baseURL = u }
 ```
 
 - [ ] **Step 3: Verify.**
@@ -726,8 +871,7 @@ func TestDefaultBranch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := githubpr.New(&fakeTokens{tok: "ghs_test"}, srv.Client())
-	c.SetBaseURL(srv.URL)
+	c := githubpr.New(srv.URL, &fakeTokens{tok: "ghs_test"})
 
 	got, err := c.DefaultBranch(context.Background(), "owner/repo")
 	require.NoError(t, err)
@@ -740,8 +884,7 @@ func TestDefaultBranch_404(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := githubpr.New(&fakeTokens{tok: "ghs_test"}, srv.Client())
-	c.SetBaseURL(srv.URL)
+	c := githubpr.New(srv.URL, &fakeTokens{tok: "ghs_test"})
 
 	_, err := c.DefaultBranch(context.Background(), "owner/repo")
 	require.Error(t, err)
@@ -838,8 +981,7 @@ func TestCreate_PostsCorrectBody(t *testing.T) {
 		_, _ = w.Write([]byte(`{"number":42,"html_url":"https://github.com/owner/repo/pull/42","url":"https://api.github.com/repos/owner/repo/pulls/42"}`))
 	}))
 	defer srv.Close()
-	c := githubpr.New(&fakeTokens{tok: "ghs_test"}, srv.Client())
-	c.SetBaseURL(srv.URL)
+	c := githubpr.New(srv.URL, &fakeTokens{tok: "ghs_test"})
 
 	pr, err := c.Create(context.Background(), githubpr.CreateArgs{
 		Repo:  "owner/repo",
@@ -861,8 +1003,7 @@ func TestCreate_422Error(t *testing.T) {
 		http.Error(w, `{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"invalid"}]}`, 422)
 	}))
 	defer srv.Close()
-	c := githubpr.New(&fakeTokens{tok: "ghs_test"}, srv.Client())
-	c.SetBaseURL(srv.URL)
+	c := githubpr.New(srv.URL, &fakeTokens{tok: "ghs_test"})
 
 	_, err := c.Create(context.Background(), githubpr.CreateArgs{Repo: "o/r", Head: "h", Base: "main", Title: "t", Body: "b"})
 	require.Error(t, err)
@@ -960,8 +1101,7 @@ func TestClose_PatchesStateClosed(t *testing.T) {
 		_, _ = w.Write([]byte(`{"number":42,"state":"closed"}`))
 	}))
 	defer srv.Close()
-	c := githubpr.New(&fakeTokens{tok: "ghs_test"}, srv.Client())
-	c.SetBaseURL(srv.URL)
+	c := githubpr.New(srv.URL, &fakeTokens{tok: "ghs_test"})
 
 	err := c.Close(context.Background(), "owner/repo", 42)
 	require.NoError(t, err)
@@ -1242,11 +1382,126 @@ git add internal/queue/pr_body.go internal/queue/pr_body_test.go
 git commit -m "feat(queue): ComposePRBody + rune-safe Truncate helpers"
 ```
 
-## Task V-4: Wire PR creation into `RunNext` happy path
+## Task V-4: Interface/struct renames FIRST (keeps every commit green)
+
+Before wiring PR creation into `RunNext`, apply the signature changes that the wiring will need, so no intermediate commit is red.
 
 **Files:**
 - Modify: `internal/queue/queue.go`
+- Modify: `cmd/orchestrator/main.go`
 - Modify: `internal/queue/queue_run_test.go`
+
+- [ ] **Step 1: Rename `NeedsReviewArgs.CompareURL` → `PRURL`.**
+
+In `internal/queue/queue.go` (~line 48):
+
+```go
+type NeedsReviewArgs struct {
+    TaskID     int64
+    Branch     string
+    Summary    string
+    Tokens     int64
+    CostCents  int
+    Findings   []diffscan.Finding
+    Diffs      []diffscan.FileDiff
+    PRURL      string // was CompareURL; now PR html_url (or branch URL fallback when PR creation fails)
+}
+```
+
+Update the existing `RunNext` call site at line ~204:
+
+```go
+compareURL := fmt.Sprintf("https://github.com/%s/compare/main...%s", effectiveRepo, branch)
+q.notifier.NotifyNeedsReview(ctx, NeedsReviewArgs{
+    ...
+    PRURL: compareURL, // temp — V-6's wiring will feed the real PR URL here.
+})
+```
+
+(For this commit we keep the compare URL flowing into the renamed field. V-6 will replace the value.)
+
+- [ ] **Step 2: Extend `Notifier.NotifyCompleted` signature.**
+
+```go
+type Notifier interface {
+    NotifyCompleted(ctx context.Context, taskID int64, repo, branch, prURL, summary string, tokens int64, costCents int)
+    NotifyFailed(ctx context.Context, taskID int64, reason string)
+    NotifyNeedsReview(ctx context.Context, args NeedsReviewArgs)
+}
+```
+
+Update the existing RunNext call site (~line 216) to pass a branch tree URL as placeholder until V-6 plugs in a real PR URL:
+
+```go
+q.notifier.NotifyCompleted(ctx, t.ID, effectiveRepo, branch,
+    fmt.Sprintf("https://github.com/%s/tree/%s", effectiveRepo, branch),
+    summary, tokens, costCents)
+```
+
+- [ ] **Step 3: Update `cmd/orchestrator/main.go` — `tgNotifier` + `formatNeedsReviewMessage`.**
+
+In `tgNotifier.NotifyCompleted`:
+
+```go
+func (n *tgNotifier) NotifyCompleted(ctx context.Context, id int64, repo, branch, prURL, summary string, tokens int64, costCents int) {
+    if repo == "" { repo = n.repo }
+    var msg string
+    if branch == "" {
+        msg = fmt.Sprintf("task #%d: no changes\nsummary: %s\ntokens: %d  cost: $%.2f",
+            id, truncateForTelegram(summary, 3500), tokens, float64(costCents)/100.0)
+    } else {
+        msg = fmt.Sprintf(
+            "task #%d completed\nbranch: %s\n%s\nsummary: %s\ntokens: %d  cost: $%.2f",
+            id, branch, prURL, truncateForTelegram(summary, 3500), tokens, float64(costCents)/100.0,
+        )
+    }
+    if err := n.client.SendMessage(ctx, n.chatID, msg); err != nil {
+        slog.Error("notify completed", "err", err, "task", id)
+    }
+}
+```
+
+In `formatNeedsReviewMessage`, replace every `a.CompareURL` with `a.PRURL` and change the label string from `compare:` to `pr:`.
+
+- [ ] **Step 4: Update `fakeNotifier` in `queue_run_test.go`.**
+
+```go
+type completedArgs struct {
+    ID        int64
+    Repo      string
+    Branch    string
+    PRURL     string
+    Summary   string
+    Tokens    int64
+    CostCents int
+}
+func (f *fakeNotifier) NotifyCompleted(ctx context.Context, id int64, repo, b, prURL, s string, t int64, c int) {
+    f.completed = append(f.completed, completedArgs{id, repo, b, prURL, s, t, c})
+}
+```
+
+In the `needsReviewArgs` fixture struct, rename `CompareURL` → `PRURL` and update all assertions.
+
+- [ ] **Step 5: Verify.**
+
+```
+go test -race -count=1 ./internal/queue/ ./cmd/orchestrator/
+```
+
+Expected: all green. (No new feature yet — just renames. Commit is clean.)
+
+- [ ] **Step 6: Commit.**
+
+```bash
+git add internal/queue/queue.go cmd/orchestrator/main.go internal/queue/queue_run_test.go
+git commit -m "refactor(queue,orchestrator): rename CompareURL→PRURL, extend NotifyCompleted with prURL arg"
+```
+
+## Task V-5: Wire PR creation into `RunNext` (formerly V-4)
+
+**Files:**
+- Modify: `internal/queue/queue.go`
+- Create: `internal/queue/queue_pr_test.go`
 
 - [ ] **Step 1: Write the failing test.**
 
@@ -1327,17 +1582,15 @@ func TestQueue_RunNext_OpensPROnSuccess(t *testing.T) {
 }
 ```
 
-Note: this test uses `n.completed[0].PRURL` — part of the work in V-7 is adding PRURL to `completedArgs`. Either order the tasks so PRURL lands first, OR land this test alongside V-7. Plan does V-4 + V-7 in one coherent change; see V-7.
-
 - [ ] **Step 2: Verify fail.**
 
 ```
 go test -run TestQueue_RunNext_OpensPROnSuccess ./internal/queue/
 ```
 
-Expected: FAIL — `q.SetPRCreator` is a no-op today and notifier doesn't receive `PRURL`.
+Expected: FAIL — `q.prCreator.Create` is never called.
 
-- [ ] **Step 3: Implement V-4 change in `RunNext`.**
+- [ ] **Step 3: Implement wiring in `RunNext`.**
 
 In `internal/queue/queue.go`, locate (around line 175-215):
 
@@ -1390,24 +1643,37 @@ diffs, err := q.compare.Compare(ctx, effectiveRepo, base, branch)
 
 (Replaces the hardcoded `"main"` at line 186.)
 
-Pass `prURL` into the notifier calls — see V-7.
+Replace the placeholder NotifyCompleted call that V-4 left behind:
 
-- [ ] **Step 4: Build check only (test will still fail until V-7).**
+```go
+// Before (from V-4):
+q.notifier.NotifyCompleted(ctx, t.ID, effectiveRepo, branch,
+    fmt.Sprintf("https://github.com/%s/tree/%s", effectiveRepo, branch),
+    summary, tokens, costCents)
+
+// After:
+q.notifier.NotifyCompleted(ctx, t.ID, effectiveRepo, branch, prURL,
+    summary, tokens, costCents)
+```
+
+Same swap inside `NotifyNeedsReview`'s `NeedsReviewArgs{... PRURL: prURL}` — replace the compareURL temp from V-4.
+
+- [ ] **Step 4: Verify pass.**
 
 ```
-go build ./...
+go test -race -count=1 ./internal/queue/
 ```
 
-Expected: compiles. (Test still fails — that's OK, V-7 closes it.)
+Expected: `TestQueue_RunNext_OpensPROnSuccess` and existing regression all PASS.
 
-- [ ] **Step 5: Commit WIP, marker.**
+- [ ] **Step 5: Commit.**
 
 ```bash
-git add internal/queue/queue.go
-git commit -m "feat(queue): RunNext opens PR after commit, threads base from DefaultBranch"
+git add internal/queue/queue.go internal/queue/queue_pr_test.go
+git commit -m "feat(queue): RunNext opens PR after commit, threads base from DefaultBranch into diff-scan + notifier"
 ```
 
-## Task V-5: PR failure fallback test (negative case)
+## Task V-6: PR failure fallback test (negative case)
 
 **Files:**
 - Modify: `internal/queue/queue_pr_test.go`
@@ -1427,7 +1693,7 @@ func TestQueue_RunNext_PRCreateFails_FallsBackToBranchURL(t *testing.T) {
     n := &fakeNotifier{}
     q.SetNotifier(n)
 
-    _, err := repo.CreateTask(ctx, "failing pr task", "owner/repo")
+    task, err := repo.CreateTask(ctx, "failing pr task", "owner/repo")
     require.NoError(t, err)
     _, err = q.RunNext(ctx)
     require.NoError(t, err)
@@ -1435,7 +1701,7 @@ func TestQueue_RunNext_PRCreateFails_FallsBackToBranchURL(t *testing.T) {
     require.Len(t, n.completed, 1)
     require.Contains(t, n.completed[0].PRURL, "/tree/agent/2/x")
     // Error event was logged.
-    events, _ := repo.ListEventsForTask(ctx, 1)
+    events, _ := repo.ListEvents(ctx, task.ID)
     found := false
     for _, e := range events {
         if e.Kind == "pr_create_error" {
@@ -1483,170 +1749,7 @@ git add internal/queue/queue_pr_test.go
 git commit -m "test(queue): PR create fails → branch URL fallback; default branch fails → main"
 ```
 
-## Task V-6: `NeedsReviewArgs.PRURL` replaces `CompareURL`
-
-**Files:**
-- Modify: `internal/queue/queue.go`
-- Modify: `cmd/orchestrator/main.go`
-- Modify: `internal/queue/queue_run_test.go`
-
-- [ ] **Step 1: Rename field.**
-
-In `internal/queue/queue.go` (~line 48):
-
-```go
-type NeedsReviewArgs struct {
-    TaskID     int64
-    Branch     string
-    Summary    string
-    Tokens     int64
-    CostCents  int
-    Findings   []diffscan.Finding
-    Diffs      []diffscan.FileDiff
-    PRURL      string // was CompareURL; now the PR's html_url, or branch URL fallback
-}
-```
-
-- [ ] **Step 2: Update call site in RunNext.**
-
-Replace:
-
-```go
-compareURL := fmt.Sprintf("https://github.com/%s/compare/main...%s", effectiveRepo, branch)
-q.notifier.NotifyNeedsReview(ctx, NeedsReviewArgs{
-    ...
-    CompareURL: compareURL,
-})
-```
-
-with:
-
-```go
-q.notifier.NotifyNeedsReview(ctx, NeedsReviewArgs{
-    ...
-    PRURL: prURL, // already composed above (PR html_url, or branch tree URL on failure)
-})
-```
-
-- [ ] **Step 3: Update `tgNotifier` formatting.**
-
-In `cmd/orchestrator/main.go` (~line 225), change:
-
-```go
-fmt.Fprintf(&b, "compare: %s\n\n", a.CompareURL)
-```
-
-to:
-
-```go
-fmt.Fprintf(&b, "pr: %s\n\n", a.PRURL)
-```
-
-Update the header label from "compare:" to "pr:" everywhere else in `formatNeedsReviewMessage`.
-
-- [ ] **Step 4: Update `needsReviewArgs` test struct.**
-
-In `queue_run_test.go` around line 179-187, rename `CompareURL` → `PRURL`. Update any assertions that mention `CompareURL`.
-
-- [ ] **Step 5: Verify.**
-
-```
-go test -race ./internal/queue/ ./cmd/orchestrator/
-```
-
-- [ ] **Step 6: Commit.**
-
-```bash
-git add internal/queue/queue.go cmd/orchestrator/main.go internal/queue/queue_run_test.go
-git commit -m "refactor(queue,orchestrator): rename NeedsReviewArgs.CompareURL → PRURL"
-```
-
-## Task V-7: `Notifier.NotifyCompleted` gains `prURL`
-
-**Files:**
-- Modify: `internal/queue/queue.go`
-- Modify: `cmd/orchestrator/main.go`
-- Modify: `internal/queue/queue_run_test.go`
-
-- [ ] **Step 1: Change interface.**
-
-In `internal/queue/queue.go`:
-
-```go
-type Notifier interface {
-    NotifyCompleted(ctx context.Context, taskID int64, repo, branch, prURL, summary string, tokens int64, costCents int)
-    NotifyFailed(ctx context.Context, taskID int64, reason string)
-    NotifyNeedsReview(ctx context.Context, args NeedsReviewArgs)
-}
-```
-
-- [ ] **Step 2: Update RunNext call site.**
-
-In the diff-scan-clean branch (`else`):
-
-```go
-q.notifier.NotifyCompleted(ctx, t.ID, effectiveRepo, branch, prURL, summary, tokens, costCents)
-```
-
-- [ ] **Step 3: Update fake in tests.**
-
-In `queue_run_test.go`:
-
-```go
-type completedArgs struct {
-    ID        int64
-    Repo      string
-    Branch    string
-    PRURL     string
-    Summary   string
-    Tokens    int64
-    CostCents int
-}
-
-func (f *fakeNotifier) NotifyCompleted(ctx context.Context, id int64, repo, b, prURL, s string, t int64, c int) {
-    f.completed = append(f.completed, completedArgs{id, repo, b, prURL, s, t, c})
-}
-```
-
-- [ ] **Step 4: Update `tgNotifier`.**
-
-In `cmd/orchestrator/main.go`:
-
-```go
-func (n *tgNotifier) NotifyCompleted(ctx context.Context, id int64, repo, branch, prURL, summary string, tokens int64, costCents int) {
-    if repo == "" { repo = n.repo }
-    var msg string
-    if branch == "" {
-        msg = fmt.Sprintf("task #%d: no changes\nsummary: %s\ntokens: %d  cost: $%.2f",
-            id, truncateForTelegram(summary, 3500), tokens, float64(costCents)/100.0)
-    } else {
-        msg = fmt.Sprintf(
-            "task #%d completed\nbranch: %s\n%s\nsummary: %s\ntokens: %d  cost: $%.2f",
-            id, branch, prURL, truncateForTelegram(summary, 3500), tokens, float64(costCents)/100.0,
-        )
-    }
-    if err := n.client.SendMessage(ctx, n.chatID, msg); err != nil {
-        slog.Error("notify completed", "err", err, "task", id)
-    }
-}
-```
-
-Note: message body now has `prURL` on its own line (PR URL, or branch tree URL fallback); removed the hardcoded `https://github.com/%s/tree/%s` that was being computed from `n.repo`.
-
-- [ ] **Step 5: Verify.**
-
-```
-go test -race ./internal/queue/ ./cmd/orchestrator/
-```
-
-- [ ] **Step 6: Commit.**
-
-```bash
-git add internal/queue/queue.go cmd/orchestrator/main.go internal/queue/queue_run_test.go
-git commit -m "feat(queue,orchestrator): NotifyCompleted takes prURL, tgNotifier composes from PR link"
-```
-
-## Task V-8: Reject path closes PR before deleting branch
+## Task V-7: Reject path closes PR before deleting branch
 
 **Files:**
 - Modify: `internal/queue/queue.go`
@@ -1754,14 +1857,24 @@ func (q *Queue) RejectTask(ctx context.Context, id int64) error {
     if err != nil {
         return fmt.Errorf("get task: %w", err)
     }
-    if t.Status != "needs_review" {
+    switch t.Status {
+    case "rejected":
+        return nil // idempotent (matches pre-M4 behavior)
+    case "needs_review":
+        // fall through
+    default:
         return fmt.Errorf("cannot reject task in state %q", t.Status)
+    }
+
+    effectiveRepo := t.TargetRepo
+    if effectiveRepo == "" {
+        effectiveRepo = q.repoFQN
     }
 
     // 1. Close PR first (so GitHub doesn't auto-close on branch delete leaving a
     //    dangling closed-by-branch-delete PR).
     if t.PrNumber.Valid && q.prCreator != nil {
-        if err := q.prCreator.Close(ctx, t.TargetRepo, int(t.PrNumber.Int64)); err != nil {
+        if err := q.prCreator.Close(ctx, effectiveRepo, int(t.PrNumber.Int64)); err != nil {
             _ = q.repo.AppendEvent(ctx, id, "pr_close_error", quoteJSON(err.Error()))
         } else {
             _ = q.repo.AppendEvent(ctx, id, "pr_closed", "{}")
@@ -1770,7 +1883,7 @@ func (q *Queue) RejectTask(ctx context.Context, id int64) error {
 
     // 2. Delete branch.
     if t.BranchName.Valid && q.branchDeleter != nil && t.BranchName.String != "" {
-        if err := q.branchDeleter.DeleteBranch(ctx, t.TargetRepo, t.BranchName.String); err != nil {
+        if err := q.branchDeleter.DeleteBranch(ctx, effectiveRepo, t.BranchName.String); err != nil {
             _ = q.repo.AppendEvent(ctx, id, "branch_delete_error", quoteJSON(err.Error()))
         } else {
             _ = q.repo.AppendEvent(ctx, id, "branch_deleted", "{}")
@@ -1801,7 +1914,7 @@ git add internal/queue/queue.go internal/queue/queue_reject_test.go
 git commit -m "feat(queue): RejectTask closes PR before deleting branch, tolerates null pr_number"
 ```
 
-## Task V-9: Wire `githubpr.Client` into orchestrator main
+## Task V-8: Wire `githubpr.Client` into orchestrator main
 
 **Files:**
 - Modify: `cmd/orchestrator/main.go`
@@ -1811,11 +1924,13 @@ git commit -m "feat(queue): RejectTask closes PR before deleting branch, tolerat
 After existing `githubbranch.New(...)` / `githubcompare.New(...)` construction in `main()`:
 
 ```go
-prClient := githubpr.New(tokenSource, nil)
+prClient := githubpr.New("", appClient)
 q.SetPRCreator(prClient)
 ```
 
 Add import: `"github.com/vaibhav0806/era/internal/githubpr"`.
+
+(Note: `appClient` is the concrete `*githubapp.Client` already constructed in main.go; it satisfies `githubpr.TokenSource` via duck typing on `InstallationToken`. Pass the concrete type, not a `queue.TokenSource`-typed variable — Go nominal typing will reject the latter.)
 
 - [ ] **Step 2: Build check.**
 
@@ -1838,7 +1953,7 @@ git add cmd/orchestrator/main.go
 git commit -m "feat(orchestrator): wire githubpr.Client into queue"
 ```
 
-## Task V-10: Smoke script + live gate
+## Task V-9: Smoke script + live gate
 
 **Files:**
 - Create: `scripts/smoke/phase_v_prs.sh`
@@ -1885,7 +2000,7 @@ git commit -m "docs(smoke): phase V PR creation"
 
 **Goal:** `/cancel <id>` on a running task docker-kills the container and DMs "cancelled" within 2s.
 
-## Task W-1: `runningSet` type + tests
+## Task W-1: `RunningSet` type + tests
 
 **Files:**
 - Create: `internal/queue/running.go`
@@ -1960,34 +2075,38 @@ package queue
 
 import "sync"
 
-type runningSet struct {
+// RunningSet tracks taskID → docker container name for live-running tasks,
+// plus a "killed" flag set when /cancel docker-kills a task so RunNext knows
+// to transition it to 'cancelled' instead of 'failed'. Exported because
+// the runner adapter (in internal/runner) needs to Register/Deregister.
+type RunningSet struct {
     mu     sync.Mutex
     m      map[int64]string
     killed map[int64]bool
 }
 
-func NewRunningSet() *runningSet {
-    return &runningSet{m: map[int64]string{}, killed: map[int64]bool{}}
+func NewRunningSet() *RunningSet {
+    return &RunningSet{m: map[int64]string{}, killed: map[int64]bool{}}
 }
-func (r *runningSet) Register(id int64, name string) {
+func (r *RunningSet) Register(id int64, name string) {
     r.mu.Lock(); defer r.mu.Unlock()
     r.m[id] = name
 }
-func (r *runningSet) Deregister(id int64) {
+func (r *RunningSet) Deregister(id int64) {
     r.mu.Lock(); defer r.mu.Unlock()
     delete(r.m, id)
     delete(r.killed, id)
 }
-func (r *runningSet) Get(id int64) (string, bool) {
+func (r *RunningSet) Get(id int64) (string, bool) {
     r.mu.Lock(); defer r.mu.Unlock()
     name, ok := r.m[id]
     return name, ok
 }
-func (r *runningSet) MarkKilled(id int64) {
+func (r *RunningSet) MarkKilled(id int64) {
     r.mu.Lock(); defer r.mu.Unlock()
     r.killed[id] = true
 }
-func (r *runningSet) WasKilled(id int64) bool {
+func (r *RunningSet) WasKilled(id int64) bool {
     r.mu.Lock(); defer r.mu.Unlock()
     return r.killed[id]
 }
@@ -2070,10 +2189,10 @@ Add to Queue:
 
 ```go
 killer ContainerKiller // may be nil
-running *runningSet    // initialized in New
+running *RunningSet    // initialized in New
 
 func (q *Queue) SetKiller(k ContainerKiller) { q.killer = k }
-func (q *Queue) Running() *runningSet        { return q.running } // exposed for runner to Register
+func (q *Queue) Running() *RunningSet        { return q.running } // exposed for runner to Register
 ```
 
 Initialize `running` in `New(...)`: `q.running = NewRunningSet()`.
@@ -2099,92 +2218,133 @@ git commit -m "feat(queue): ContainerKiller interface + docker impl + runningSet
 - Modify: `internal/runner/docker_test.go`
 - Modify: `internal/runner/adapter.go`
 
+**Design:** rather than rewrite `Docker.Run`'s signature, add `ContainerName string` to the existing `RunInput` struct. Adapter generates the name, registers it in `RunningSet` before calling the runner, and deregisters after. Non-breaking.
+
 - [ ] **Step 1: Write the failing test.**
 
 In `internal/runner/docker_test.go`, add:
 
 ```go
-func TestBuildDockerRunArgs_IncludesNameFlag(t *testing.T) {
-    args := buildDockerRunArgs(42, "era-runner-42-xyz", "/workspace", RunInput{
-        TaskID: 42, Repo: "o/r", Description: "x", GitHubToken: "tok",
-    })
-    // Assert --name era-runner-42-xyz appears with the correct value.
+func TestBuildDockerArgs_IncludesNameFlag(t *testing.T) {
+    in := RunInput{
+        TaskID:        42,
+        Repo:          "o/r",
+        Description:   "x",
+        GitHubToken:   "tok",
+        ContainerName: "era-runner-42-xyz",
+    }
+    args := buildDockerArgs("/workspace", in)
     var found bool
     for i, a := range args {
         if a == "--name" && i+1 < len(args) && args[i+1] == "era-runner-42-xyz" {
             found = true
+            break
         }
     }
-    require.True(t, found, "--name flag missing or wrong: %v", args)
-}
-```
-
-If the existing code uses an inline `[]string{...}`, refactor to a helper `buildDockerRunArgs` for testability.
-
-- [ ] **Step 2: Change the runner signature.**
-
-Update `RunInput` (or the runner package's `Run` signature) to accept a `ContainerName string` field that the adapter provides. Generate the name at adapter-level so the Queue can Register it before Run:
-
-In `internal/runner/adapter.go`, inside `QueueAdapter.Run`:
-
-```go
-// Generate a unique name.
-name := fmt.Sprintf("era-runner-%d-%d", taskID, time.Now().UnixNano())
-// Queue registers BEFORE we call docker run, so /cancel right after task pickup works.
-if a.running != nil {
-    a.running.Register(taskID, name)
-    defer a.running.Deregister(taskID)
-}
-// Pass name into docker.Run.
-res, err := a.docker.Run(ctx, taskID, description, ghToken, repo, name)
-```
-
-Modify `QueueAdapter` struct to accept `running *runningSet` via a setter:
-
-```go
-func (a *QueueAdapter) SetRunning(r *runningSet) { a.running = r }
-```
-
-(Alternative: pass name-registering callback to adapter. Either works; setter is simpler.)
-
-In `internal/runner/docker.go`:
-
-```go
-func (d *Docker) Run(ctx context.Context, taskID int64, description, token, repo, containerName string) (RunResult, error) {
-    ...
-    args := buildDockerRunArgs(taskID, containerName, workspace, RunInput{...})
-    ...
+    require.True(t, found, "--name era-runner-42-xyz missing: %v", args)
 }
 
-func buildDockerRunArgs(taskID int64, name, workspace string, in RunInput) []string {
-    args := []string{"run", "--rm", "--name", name,
-        // ... existing flags ...
+func TestBuildDockerArgs_OmitsNameWhenBlank(t *testing.T) {
+    in := RunInput{TaskID: 1, Repo: "o/r", Description: "x"}
+    args := buildDockerArgs("/workspace", in)
+    for i, a := range args {
+        if a == "--name" && i+1 < len(args) {
+            t.Fatalf("--name should be omitted when ContainerName empty; got %v", args)
+        }
     }
+}
+```
+
+If the existing `Docker.Run` builds args inline, extract into a helper:
+
+```go
+func buildDockerArgs(workspace string, in RunInput) []string {
+    args := []string{"run", "--rm"}
+    if in.ContainerName != "" {
+        args = append(args, "--name", in.ContainerName)
+    }
+    // ... existing flags verbatim ...
     return args
 }
 ```
 
-- [ ] **Step 3: Wire setters in orchestrator main.**
+Call site inside `Docker.Run`:
 
 ```go
-// After q constructed:
-runningSet := q.Running() // exposes the internal *runningSet
-runnerAdapter.SetRunning(runningSet) // pattern-break: adapter already exists
-q.SetKiller(queue.NewDockerKiller())
+cmd := exec.CommandContext(ctx, "docker", buildDockerArgs(workspace, in)...)
 ```
 
-- [ ] **Step 4: Verify.**
+- [ ] **Step 2: Add `ContainerName` to `RunInput`.**
+
+```go
+type RunInput struct {
+    TaskID        int64
+    Repo          string
+    Description   string
+    GitHubToken   string
+    ContainerName string // optional; if set, passed as `docker run --name`
+}
+```
+
+- [ ] **Step 3: Generate name in adapter + register in RunningSet.**
+
+In `internal/runner/adapter.go`:
+
+```go
+import "github.com/vaibhav0806/era/internal/queue"
+
+type QueueAdapter struct {
+    D       *Docker
+    running *queue.RunningSet // optional; nil in unit tests
+}
+
+func (a *QueueAdapter) SetRunning(r *queue.RunningSet) { a.running = r }
+
+func (a *QueueAdapter) Run(ctx context.Context, taskID int64, description, ghToken, repo string) (branch, summary string, tokens int64, costCents int, audits []audit.Entry, err error) {
+    name := fmt.Sprintf("era-runner-%d-%d", taskID, time.Now().UnixNano())
+    if a.running != nil {
+        a.running.Register(taskID, name)
+        defer a.running.Deregister(taskID)
+    }
+    out, runErr := a.D.Run(ctx, RunInput{
+        TaskID:        taskID,
+        Repo:          repo,
+        Description:   description,
+        GitHubToken:   ghToken,
+        ContainerName: name,
+    })
+    ...
+}
+```
+
+Verify the existing `QueueAdapter.Run` signature exactly (return tuple may vary); preserve it, only add the name-register flow at top.
+
+- [ ] **Step 4: Wire setters in orchestrator main.**
+
+`cmd/orchestrator/main.go`: the existing adapter construction is likely `runner.QueueAdapter{D: docker}` as a literal. Change to a variable, take its address, and call the setter:
+
+```go
+ra := &runner.QueueAdapter{D: docker}
+// after q := queue.New(...):
+ra.SetRunning(q.Running())
+q.SetKiller(queue.NewDockerKiller())
+// pass ra (already a pointer) to queue.New or wherever the adapter is consumed
+```
+
+If the existing code does `queue.New(..., runner.QueueAdapter{D: docker})` pass-by-value, switch to `&runner.QueueAdapter{D: docker}` + change the expected type to `*runner.QueueAdapter`.
+
+- [ ] **Step 5: Verify.**
 
 ```
 go test -race ./internal/runner/ ./internal/queue/
 go build ./...
 ```
 
-- [ ] **Step 5: Commit.**
+- [ ] **Step 6: Commit.**
 
 ```bash
-git add internal/runner/docker.go internal/runner/docker_test.go internal/runner/adapter.go cmd/orchestrator/main.go internal/queue/queue.go
-git commit -m "feat(runner,queue): generate unique container name + register in runningSet"
+git add internal/runner/docker.go internal/runner/docker_test.go internal/runner/adapter.go cmd/orchestrator/main.go
+git commit -m "feat(runner): add RunInput.ContainerName + register in RunningSet via adapter"
 ```
 
 ## Task W-4: `CancelTask` extended for running state
@@ -2285,6 +2445,8 @@ func (q *Queue) CancelTask(ctx context.Context, id int64) error {
         return fmt.Errorf("get task: %w", err)
     }
     switch t.Status {
+    case "cancelled":
+        return nil // idempotent (preserved from pre-M4 behavior)
     case "queued":
         if err := q.repo.SetStatus(ctx, id, "cancelled"); err != nil {
             return fmt.Errorf("set status: %w", err)
@@ -2442,14 +2604,19 @@ git commit -m "feat(orchestrator): tgNotifier.NotifyCancelled DM"
 - Modify: `queries/tasks.sql`
 - Modify: `internal/db/repo.go`
 
-- [ ] **Step 1: Add sqlc query.**
+- [ ] **Step 1: Add sqlc queries.**
 
 ```sql
+-- name: ListRunningTaskIDs :many
+SELECT id FROM tasks WHERE status='running';
+
 -- name: MarkRunningTasksFailed :execrows
 UPDATE tasks
    SET status='failed', error=?, finished_at=CURRENT_TIMESTAMP
  WHERE status='running';
 ```
+
+Two queries: the first enumerates IDs so Reconcile can append an event per affected task (per spec §5.2), the second flips them all in one SQL statement.
 
 - [ ] **Step 2: Regenerate.**
 
@@ -2457,15 +2624,17 @@ UPDATE tasks
 sqlc generate
 ```
 
-- [ ] **Step 3: Add repo wrapper.**
+- [ ] **Step 3: Add repo wrappers.**
 
 ```go
-func (r *Repo) ReconcileRunningToFailed(ctx context.Context, reason string) (int64, error) {
+func (r *Repo) ListRunningTaskIDs(ctx context.Context) ([]int64, error) {
+    return r.q.ListRunningTaskIDs(ctx)
+}
+
+func (r *Repo) MarkRunningTasksFailed(ctx context.Context, reason string) (int64, error) {
     return r.q.MarkRunningTasksFailed(ctx, sql.NullString{String: reason, Valid: true})
 }
 ```
-
-(Signature depends on sqlc output — column type for `error` is probably `sql.NullString`.)
 
 - [ ] **Step 4: Write failing test.**
 
@@ -2486,6 +2655,17 @@ func TestReconcile_RunningToFailed(t *testing.T) {
     require.Equal(t, "failed", got.Status)
     require.Contains(t, got.Error.String, "orchestrator restart")
 
+    // Reconcile should have appended a per-task event.
+    events, _ := repo.ListEvents(ctx, t1.ID)
+    foundEvent := false
+    for _, e := range events {
+        if e.Kind == "reconciled_failed" {
+            foundEvent = true
+            break
+        }
+    }
+    require.True(t, foundEvent, "reconciled_failed event must be logged")
+
     got2, _ := repo.GetTask(ctx, t2.ID)
     require.Equal(t, "queued", got2.Status)
 }
@@ -2499,10 +2679,26 @@ package queue
 import "context"
 
 // Reconcile sweeps any tasks still marked 'running' into 'failed' with a
-// restart-lost-state reason. Call once at orchestrator startup before serving
-// new requests. Returns number of tasks transitioned.
+// restart-lost-state reason, appending a `reconciled_failed` event per task.
+// Call once at orchestrator startup before serving new requests.
+// Returns number of tasks transitioned.
 func (q *Queue) Reconcile(ctx context.Context) (int64, error) {
-    return q.repo.ReconcileRunningToFailed(ctx, "orchestrator restart, task state lost")
+    ids, err := q.repo.ListRunningTaskIDs(ctx)
+    if err != nil {
+        return 0, fmt.Errorf("list running: %w", err)
+    }
+    if len(ids) == 0 {
+        return 0, nil
+    }
+    reason := "orchestrator restart, task state lost"
+    n, err := q.repo.MarkRunningTasksFailed(ctx, reason)
+    if err != nil {
+        return 0, fmt.Errorf("mark failed: %w", err)
+    }
+    for _, id := range ids {
+        _ = q.repo.AppendEvent(ctx, id, "reconciled_failed", quoteJSON(reason))
+    }
+    return n, nil
 }
 ```
 
@@ -2736,8 +2932,25 @@ log() { echo "==> $*"; }
 log "apt update + install system deps"
 apt-get update -y
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    docker.io docker-buildx golang-go make git rsync sqlite3 ufw \
+    docker.io docker-buildx make git rsync sqlite3 ufw curl \
     unattended-upgrades apt-listchanges
+
+# --- Go 1.25 from official tarball (Ubuntu 24.04's golang-go is 1.22, too old) ---
+GO_VER="1.25.6"
+if ! command -v go &>/dev/null || [[ "$(go version | awk '{print $3}')" != "go$GO_VER" ]]; then
+    log "install go $GO_VER (official tarball, aarch64)"
+    ARCH=$(dpkg --print-architecture)   # arm64 on CAX11, amd64 on CPX11
+    curl -fsSL "https://go.dev/dl/go${GO_VER}.linux-${ARCH}.tar.gz" -o /tmp/go.tgz
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf /tmp/go.tgz
+    rm /tmp/go.tgz
+    # Make /usr/local/go/bin available for all users (including era) in future logins.
+    cat > /etc/profile.d/go.sh <<'GOEOF'
+export PATH=$PATH:/usr/local/go/bin
+GOEOF
+    chmod 644 /etc/profile.d/go.sh
+fi
+export PATH=$PATH:/usr/local/go/bin
 
 log "create era user (if missing)"
 if ! id era &>/dev/null; then
@@ -2750,8 +2963,9 @@ fi
 
 log "create era dirs"
 install -d -o era -g era /opt/era /var/backups/era
-install -d -o root -g root /etc/era
-chmod 750 /etc/era
+# /etc/era owned by era:era mode 700 — matches spec §3.2 and lets the era user
+# read its own env/pem without sudo while still blocking any other user.
+install -d -o era -g era -m 700 /etc/era
 
 log "sudoers entry for era (limited to restart/status era)"
 cat > /etc/sudoers.d/era <<'EOF'
@@ -2779,12 +2993,13 @@ cat <<EOF
 
 === era install complete ===
 Next steps (manual, from your Mac):
-  1. scp .env              era@$(hostname -I | awk '{print $1}'):/etc/era/env
-  2. scp github-app.pem    era@$(hostname -I | awk '{print $1}'):/etc/era/github-app.pem
-  3. ssh era@<ip> 'sudo chown era:era /etc/era/* && sudo chmod 600 /etc/era/env /etc/era/github-app.pem'
-  4. scp pi-agent.db       era@$(hostname -I | awk '{print $1}'):/opt/era/pi-agent.db
-  5. make deploy           # from the era repo checkout on your Mac
-  6. After ssh era@<ip> works: run deploy/disable-root-ssh.sh as root to lock down.
+  IP=$(hostname -I | awk '{print $1}')
+  1. scp .env              era@\$IP:/etc/era/env
+  2. scp github-app.pem    era@\$IP:/etc/era/github-app.pem
+  3. ssh era@\$IP 'chmod 600 /etc/era/env /etc/era/github-app.pem'   # /etc/era is already era:era 700
+  4. scp pi-agent.db       era@\$IP:/opt/era/pi-agent.db
+  5. make deploy VPS_HOST=era@\$IP                                   # from the era repo checkout on your Mac
+  6. After ssh era@\$IP works: run deploy/disable-root-ssh.sh as root to lock down.
 EOF
 ```
 
@@ -2832,30 +3047,56 @@ git add deploy/disable-root-ssh.sh
 git commit -m "deploy(ssh): staged root-login disable, idempotent"
 ```
 
-## Task X-6: Makefile `deploy` target
+## Task X-6: Makefile — parameterize GOARCH + add `deploy` target
 
 **Files:**
 - Modify: `Makefile`
 
-- [ ] **Step 1: Add target.**
+The existing `runner-linux` and `sidecar-linux` targets hard-code `GOARCH=amd64` (Makefile:32, 37). CAX11 is ARM64. Building `amd64` binaries on the VPS then running an `amd64` runner inside a `linux/arm64` Docker base image will fail with `exec format error`. Parameterize.
+
+- [ ] **Step 1: Parameterize GOARCH + add deploy.**
+
+Edit `Makefile`:
 
 ```make
+GOARCH ?= $(shell go env GOARCH)
+
+runner-linux:
+	GOOS=linux GOARCH=$(GOARCH) CGO_ENABLED=0 go build -o $(BIN_RUNNER_LINUX) ./cmd/runner
+
+sidecar-linux:
+	GOOS=linux GOARCH=$(GOARCH) CGO_ENABLED=0 go build -o $(BIN_SIDECAR_LINUX) ./cmd/sidecar
+
+# ... docker-runner unchanged ...
+
 VPS_HOST ?= era@178.105.44.3
 
 .PHONY: deploy
-deploy: ## Rsync repo to VPS and restart service
+deploy: ## Rsync repo to VPS and restart service (runs go builds on VPS with native GOARCH)
 	rsync -az --delete \
 	    --exclude bin/ --exclude pi-agent.db --exclude pi-agent.db-wal --exclude pi-agent.db-shm \
 	    --exclude node_modules/ --exclude .env --exclude .git \
 	    ./ $(VPS_HOST):/opt/era/
-	ssh $(VPS_HOST) 'cd /opt/era && make build && make docker-runner && sudo systemctl restart era && sudo systemctl status era --no-pager'
+	ssh $(VPS_HOST) 'cd /opt/era && /usr/local/go/bin/go env GOARCH && make build && make docker-runner && sudo systemctl restart era && sudo systemctl status era --no-pager'
 ```
 
-- [ ] **Step 2: Commit.**
+The VPS's `go env GOARCH` will report `arm64` on CAX11, so `runner-linux`/`sidecar-linux` will build `linux/arm64` binaries matching the Docker base image, and the resulting `era-runner:m2` image is usable without rebuild.
+
+- [ ] **Step 2: Local build parity check.**
+
+```
+go env GOARCH  # arm64 on your M-series Mac
+make runner-linux
+file bin/era-runner-linux  # should say aarch64
+```
+
+Expected: matches local arch (arm64 on Mac M-series).
+
+- [ ] **Step 3: Commit.**
 
 ```bash
 git add Makefile
-git commit -m "build(make): deploy target rsyncs to VPS + rebuilds + restart"
+git commit -m "build(make): parameterize GOARCH, add deploy target that builds on VPS"
 ```
 
 ## Task X-7: Run `install.sh` on VPS
@@ -2918,25 +3159,24 @@ Verify `ps` is empty for `bin/orchestrator`.
 - [ ] **Step 1:**
 
 ```
-scp .env era@178.105.44.3:/tmp/era.env
-scp ~/Downloads/era-orchestrator.2026-04-23.private-key.pem era@178.105.44.3:/tmp/era-github-app.pem
-scp pi-agent.db era@178.105.44.3:/tmp/era-pi-agent.db
+scp .env era@178.105.44.3:/etc/era/env
+scp ~/Downloads/era-orchestrator.2026-04-23.private-key.pem era@178.105.44.3:/etc/era/github-app.pem
+scp pi-agent.db era@178.105.44.3:/opt/era/pi-agent.db
 
 ssh era@178.105.44.3 '
-    sudo mv /tmp/era.env /etc/era/env
-    sudo mv /tmp/era-github-app.pem /etc/era/github-app.pem
-    mv /tmp/era-pi-agent.db /opt/era/pi-agent.db
-    sudo chown era:era /etc/era/env /etc/era/github-app.pem /opt/era/pi-agent.db
-    sudo chmod 600 /etc/era/env /etc/era/github-app.pem
+    chmod 600 /etc/era/env /etc/era/github-app.pem
+    ls -la /etc/era /opt/era/pi-agent.db
 '
 ```
+
+(Since `/etc/era/` is owned by `era:era` with mode 700 from install.sh, scp-as-era lands the files there directly. No sudo needed.)
 
 ## Task Y-3: Update `/etc/era/env` for VPS paths
 
 - [ ] **Step 1:**
 
 ```
-ssh era@178.105.44.3 'sudo sed -i "s|^PI_GITHUB_APP_PRIVATE_KEY_PATH=.*|PI_GITHUB_APP_PRIVATE_KEY_PATH=/etc/era/github-app.pem|" /etc/era/env'
+ssh era@178.105.44.3 'sed -i "s|^PI_GITHUB_APP_PRIVATE_KEY_PATH=.*|PI_GITHUB_APP_PRIVATE_KEY_PATH=/etc/era/github-app.pem|" /etc/era/env'
 ssh era@178.105.44.3 'grep "PI_GITHUB_APP_PRIVATE_KEY_PATH\|PI_DB_PATH" /etc/era/env'
 ```
 
