@@ -50,4 +50,4 @@ deploy: ## Rsync repo to VPS and restart service (runs go builds on VPS with nat
 	    --exclude bin/ --exclude pi-agent.db --exclude pi-agent.db-wal --exclude pi-agent.db-shm \
 	    --exclude node_modules/ --exclude .env --exclude .git \
 	    ./ $(VPS_HOST):/opt/era/
-	ssh $(VPS_HOST) 'export PATH=/usr/local/go/bin:$$PATH && cd /opt/era && go env GOARCH && make build && make docker-runner && sudo systemctl restart era && sudo systemctl status era --no-pager'
+	ssh $(VPS_HOST) 'export PATH=/usr/local/go/bin:$$PATH && cd /opt/era && go env GOARCH && make build && make docker-runner && sudo systemctl restart era && sudo systemctl status era'
