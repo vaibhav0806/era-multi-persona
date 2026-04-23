@@ -10,7 +10,6 @@ import (
 type runnerConfig struct {
 	TaskID          int64
 	TaskDescription string
-	GitHubPAT       string
 	GitHubRepo      string // "owner/repo"
 
 	PiModel string
@@ -24,7 +23,6 @@ type runnerConfig struct {
 func loadRunnerConfig() (*runnerConfig, error) {
 	c := &runnerConfig{
 		TaskDescription: os.Getenv("ERA_TASK_DESCRIPTION"),
-		GitHubPAT:       os.Getenv("ERA_GITHUB_PAT"),
 		GitHubRepo:      os.Getenv("ERA_GITHUB_REPO"),
 		PiModel:         os.Getenv("ERA_PI_MODEL"),
 	}
@@ -44,7 +42,6 @@ func loadRunnerConfig() (*runnerConfig, error) {
 		v    string
 	}{
 		{"ERA_TASK_DESCRIPTION", c.TaskDescription},
-		{"ERA_GITHUB_PAT", c.GitHubPAT},
 		{"ERA_GITHUB_REPO", c.GitHubRepo},
 		{"ERA_PI_MODEL", c.PiModel},
 	} {

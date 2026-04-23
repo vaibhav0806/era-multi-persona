@@ -8,9 +8,16 @@ set -eu
 # Sidecar listens on loopback so only in-container processes can reach it.
 export PI_SIDECAR_LISTEN_ADDR="127.0.0.1:8080"
 
-# PI_SIDECAR_OPENROUTER_API_KEY is passed in by the orchestrator at the
-# container level. su -m below preserves it so the sidecar process sees it.
-# (No action needed here — it's already in the environment.)
+# PI_SIDECAR_OPENROUTER_API_KEY and PI_SIDECAR_GITHUB_PAT are passed in by
+# the orchestrator at the container level. su -m below preserves them so the
+# sidecar process sees them. (No action needed here — already in the env.)
+
+if [ -n "${PI_SIDECAR_GITHUB_PAT:-}" ]; then
+    echo "sidecar will receive GitHub PAT (${#PI_SIDECAR_GITHUB_PAT} chars)" >&2
+fi
+if [ -n "${PI_SIDECAR_OPENROUTER_API_KEY:-}" ]; then
+    echo "sidecar will receive OpenRouter key (${#PI_SIDECAR_OPENROUTER_API_KEY} chars)" >&2
+fi
 
 # Run sidecar as uid 100. Hard-fail if adduser fails (other than "exists").
 # Use -G users because gid 100 (users group) already exists in node:alpine;
@@ -20,7 +27,7 @@ if ! id sidecar >/dev/null 2>&1; then
 fi
 
 # `su -m` preserves the calling shell's env, so PI_SIDECAR_LISTEN_ADDR
-# (and future PI_SIDECAR_*_API_KEY vars) reach the sidecar process.
+# (and PI_SIDECAR_*_API_KEY vars) reach the sidecar process.
 su -m -s /bin/sh -c '/usr/local/bin/era-sidecar' sidecar &
 SIDECAR_PID=$!
 
@@ -87,6 +94,17 @@ cat > /tmp/pi-state/models.json <<'MODELS_EOF'
 }
 MODELS_EOF
 echo "pi models.json written (openrouter -> sidecar)" >&2
+
+# Install git credential helper that fetches creds from the sidecar.
+cat > /usr/local/bin/era-git-cred <<'EOF'
+#!/bin/sh
+if [ "$1" = "get" ]; then
+    curl -sS -X POST http://127.0.0.1:8080/credentials/git
+fi
+EOF
+chmod +x /usr/local/bin/era-git-cred
+git config --global credential.helper '/usr/local/bin/era-git-cred'
+echo "git credential helper installed (/usr/local/bin/era-git-cred)" >&2
 
 # Hand off to runner. Sidecar continues in background under uid 100.
 exec /usr/local/bin/era-runner "$@"

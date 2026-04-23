@@ -42,3 +42,11 @@ func TestSidecarConfig_OpenRouterOptional(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "sk-or-v1-abc", c.OpenRouterAPIKey)
 }
+
+func TestSidecarConfig_GitHubPATOptional(t *testing.T) {
+	t.Setenv("PI_SIDECAR_LISTEN_ADDR", "127.0.0.1:8080")
+	t.Setenv("PI_SIDECAR_GITHUB_PAT", "ghp_abc")
+	c, err := loadSidecarConfig()
+	require.NoError(t, err)
+	require.Equal(t, "ghp_abc", c.GitHubPAT)
+}

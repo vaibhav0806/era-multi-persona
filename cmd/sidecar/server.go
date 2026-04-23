@@ -22,6 +22,7 @@ func newServer(cfg *sidecarConfig) *http.Server {
 	searchHandler := newSearchHandler("", cfg.TavilyAPIKey, allow)
 	fetchHandler := newFetchHandler(allow)
 	llmHandler := newLLMHandler("", cfg.OpenRouterAPIKey)
+	credentialsHandler := newCredentialsHandler(cfg.GitHubPAT)
 	proxy := newProxyHandler(allow)
 
 	// Route manually instead of using http.ServeMux. Go 1.22+ ServeMux
@@ -42,6 +43,8 @@ func newServer(cfg *sidecarConfig) *http.Server {
 			searchHandler.ServeHTTP(w, r)
 		case "/fetch":
 			fetchHandler.ServeHTTP(w, r)
+		case "/credentials/git":
+			credentialsHandler.ServeHTTP(w, r)
 		default:
 			if strings.HasPrefix(r.URL.Path, "/llm/") {
 				llmHandler.ServeHTTP(w, r)

@@ -33,7 +33,7 @@ func run(ctx context.Context, cfg *runnerConfig) error {
 	workspace := filepath.Join("/workspace", "repo")
 
 	branch := fmt.Sprintf("agent/%d/%s", cfg.TaskID, slugify(cfg.TaskDescription))
-	remote := fmt.Sprintf("https://x-access-token:%s@github.com/%s.git", cfg.GitHubPAT, cfg.GitHubRepo)
+	remote := fmt.Sprintf("https://github.com/%s.git", cfg.GitHubRepo)
 
 	g := &gitDriver{
 		RemoteURL:   remote,

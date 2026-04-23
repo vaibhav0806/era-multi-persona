@@ -58,8 +58,8 @@ func (d *Docker) Run(ctx context.Context, in RunInput) (*RunOutput, error) {
 		"--cap-add=NET_RAW",   // for REJECT --reject-with tcp-reset
 		"-e", fmt.Sprintf("ERA_TASK_ID=%d", in.TaskID),
 		"-e", fmt.Sprintf("ERA_TASK_DESCRIPTION=%s", in.Description),
-		"-e", fmt.Sprintf("ERA_GITHUB_PAT=%s", d.GitHubPAT),
 		"-e", fmt.Sprintf("ERA_GITHUB_REPO=%s", d.SandboxRepo),
+		"-e", fmt.Sprintf("PI_SIDECAR_GITHUB_PAT=%s", d.GitHubPAT),
 		"-e", fmt.Sprintf("PI_SIDECAR_OPENROUTER_API_KEY=%s", d.OpenRouterAPIKey),
 		"-e", fmt.Sprintf("ERA_PI_MODEL=%s", d.PiModel),
 		"-e", fmt.Sprintf("ERA_MAX_TOKENS=%d", d.MaxTokens),

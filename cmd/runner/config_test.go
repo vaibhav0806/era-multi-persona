@@ -9,7 +9,6 @@ import (
 func TestRunnerConfig_AllPresent(t *testing.T) {
 	t.Setenv("ERA_TASK_ID", "7")
 	t.Setenv("ERA_TASK_DESCRIPTION", "fix the thing")
-	t.Setenv("ERA_GITHUB_PAT", "ghp_x")
 	t.Setenv("ERA_GITHUB_REPO", "a/b")
 	t.Setenv("ERA_PI_MODEL", "m")
 	t.Setenv("ERA_MAX_TOKENS", "100")
@@ -21,7 +20,6 @@ func TestRunnerConfig_AllPresent(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(7), c.TaskID)
 	require.Equal(t, "fix the thing", c.TaskDescription)
-	require.Equal(t, "ghp_x", c.GitHubPAT)
 	require.Equal(t, "a/b", c.GitHubRepo)
 	require.Equal(t, "m", c.PiModel)
 	require.Equal(t, 100, c.MaxTokens)
