@@ -186,6 +186,36 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 	if err := q.repo.CompleteTask(ctx, t.ID, branch, summary, tokens, int64(costCents)); err != nil {
 		return true, fmt.Errorf("complete task: %w", err)
 	}
+
+	var prURL string
+	var prNumber int
+	base := "main"
+	if q.prCreator != nil && branch != "" {
+		if db, err := q.prCreator.DefaultBranch(ctx, effectiveRepo); err != nil {
+			_ = q.repo.AppendEvent(ctx, t.ID, "default_branch_fallback", quoteJSON(err.Error()))
+		} else if db != "" {
+			base = db
+		}
+		pr, prErr := q.prCreator.Create(ctx, githubpr.CreateArgs{
+			Repo:  effectiveRepo,
+			Head:  branch,
+			Base:  base,
+			Title: "[era] " + Truncate(t.Description, 60),
+			Body:  ComposePRBody(t.ID, branch, summary, tokens, costCents),
+		})
+		if prErr != nil {
+			_ = q.repo.AppendEvent(ctx, t.ID, "pr_create_error", quoteJSON(prErr.Error()))
+			prURL = fmt.Sprintf("https://github.com/%s/tree/%s", effectiveRepo, branch)
+		} else {
+			prNumber = pr.Number
+			prURL = pr.HTMLURL
+			_ = q.repo.AppendEvent(ctx, t.ID, "pr_opened", quoteJSON(pr.HTMLURL))
+			_ = q.repo.SetPRNumber(ctx, t.ID, int64(prNumber))
+		}
+	} else if branch != "" {
+		prURL = fmt.Sprintf("https://github.com/%s/tree/%s", effectiveRepo, branch)
+	}
+
 	for _, ae := range audits {
 		payload, _ := json.Marshal(ae)
 		_ = q.repo.AppendEvent(ctx, t.ID, "http_request", string(payload))
@@ -193,7 +223,7 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 	var flaggedFindings []diffscan.Finding
 	var flaggedDiffs []diffscan.FileDiff
 	if q.compare != nil && branch != "" {
-		diffs, err := q.compare.Compare(ctx, effectiveRepo, "main", branch)
+		diffs, err := q.compare.Compare(ctx, effectiveRepo, base, branch)
 		if err != nil {
 			_ = q.repo.AppendEvent(ctx, t.ID, "diffscan_error", quoteJSON(err.Error()))
 		} else {
@@ -211,7 +241,6 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 	}
 	if q.notifier != nil {
 		if len(flaggedFindings) > 0 {
-			compareURL := fmt.Sprintf("https://github.com/%s/compare/main...%s", effectiveRepo, branch)
 			q.notifier.NotifyNeedsReview(ctx, NeedsReviewArgs{
 				TaskID:    t.ID,
 				Branch:    branch,
@@ -220,11 +249,10 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 				CostCents: costCents,
 				Findings:  flaggedFindings,
 				Diffs:     flaggedDiffs,
-				PRURL:     compareURL, // temp — V-5's wiring will feed the real PR URL here.
+				PRURL:     prURL,
 			})
 		} else {
-			q.notifier.NotifyCompleted(ctx, t.ID, effectiveRepo, branch,
-				fmt.Sprintf("https://github.com/%s/tree/%s", effectiveRepo, branch),
+			q.notifier.NotifyCompleted(ctx, t.ID, effectiveRepo, branch, prURL,
 				summary, tokens, costCents)
 		}
 	}
