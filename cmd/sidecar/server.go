@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -12,9 +13,10 @@ func newServer(addr string) *http.Server {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
+	audited := newAuditMiddleware(os.Stderr)(mux)
 	return &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           audited,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 }
