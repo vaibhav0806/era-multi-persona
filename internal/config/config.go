@@ -10,9 +10,9 @@ import (
 type Config struct {
 	TelegramToken         string
 	TelegramAllowedUserID int64
-	GitHubPAT             string
-	GitHubSandboxRepo     string // "owner/repo"
-	DBPath                string
+	// GitHubPAT: REMOVED (M2-26). GitHub App replaces classic PAT.
+	GitHubSandboxRepo string // "owner/repo"
+	DBPath            string
 
 	// M1 additions
 	OpenRouterAPIKey     string
@@ -22,16 +22,10 @@ type Config struct {
 	MaxIterationsPerTask int
 	MaxWallClockSeconds  int
 
-	// M2-25 additions — GitHub App (optional in M2-25, required in M2-26).
+	// M2-25/26: GitHub App now REQUIRED.
 	GitHubAppID               int64
 	GitHubAppInstallationID   int64
 	GitHubAppPrivateKeyBase64 string
-}
-
-// GitHubAppConfigured reports whether all three App env vars are present.
-// M2-26 makes this mandatory; M2-25 treats missing App as fallback to PAT.
-func (c *Config) GitHubAppConfigured() bool {
-	return c.GitHubAppID != 0 && c.GitHubAppInstallationID != 0 && c.GitHubAppPrivateKeyBase64 != ""
 }
 
 const (
@@ -45,7 +39,6 @@ const (
 func Load() (*Config, error) {
 	c := &Config{
 		TelegramToken:     os.Getenv("PI_TELEGRAM_TOKEN"),
-		GitHubPAT:         os.Getenv("PI_GITHUB_PAT"),
 		GitHubSandboxRepo: os.Getenv("PI_GITHUB_SANDBOX_REPO"),
 		DBPath:            os.Getenv("PI_DB_PATH"),
 		OpenRouterAPIKey:  os.Getenv("PI_OPENROUTER_API_KEY"),
@@ -53,9 +46,6 @@ func Load() (*Config, error) {
 
 	if c.TelegramToken == "" {
 		return nil, errors.New("PI_TELEGRAM_TOKEN is required")
-	}
-	if c.GitHubPAT == "" {
-		return nil, errors.New("PI_GITHUB_PAT is required")
 	}
 	if c.GitHubSandboxRepo == "" {
 		return nil, errors.New("PI_GITHUB_SANDBOX_REPO is required")
@@ -91,7 +81,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	// GitHub App fields — optional in M2-25.
+	// GitHub App fields — REQUIRED in M2-26.
 	if c.GitHubAppID, err = int64Env("PI_GITHUB_APP_ID", 0); err != nil {
 		return nil, err
 	}
@@ -99,6 +89,16 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	c.GitHubAppPrivateKeyBase64 = os.Getenv("PI_GITHUB_APP_PRIVATE_KEY")
+
+	if c.GitHubAppID == 0 {
+		return nil, errors.New("PI_GITHUB_APP_ID is required")
+	}
+	if c.GitHubAppInstallationID == 0 {
+		return nil, errors.New("PI_GITHUB_APP_INSTALLATION_ID is required")
+	}
+	if c.GitHubAppPrivateKeyBase64 == "" {
+		return nil, errors.New("PI_GITHUB_APP_PRIVATE_KEY is required")
+	}
 
 	return c, nil
 }
