@@ -4,6 +4,12 @@ A personal agent orchestrator that runs tasks via Telegram, executes them in dis
 
 The name reflects the intent: this is the chapter where the typing gets delegated and the focus shifts to describing and reviewing. M0 lays down the chassis; later milestones swap in a real coding agent, network allowlisting, and approval gates.
 
+## Status: Milestone 3.5 — multi-repo per task
+
+M3.5 lets a single orchestrator drive tasks across any repo the GitHub App is installed on. Send `/task vaibhav0806/my-side-project add a README` and era clones that repo, runs the agent, and pushes a branch there — completion DM links to the right repo. No orchestrator restart needed to switch targets. Tasks without a repo prefix still run on the sandbox default.
+
+Everything else from M3 still applies — approvals, EOD digest, `/cancel`, `/retry`, diff-scan, iptables egress lockdown, GitHub App tokens, audit log.
+
 ## Status: Milestone 3 — approvals + EOD digest
 
 M3 closes the human-in-the-loop gap. Every completed task is scanned for reward-hacking patterns (removed tests, `.skip` directives, weakened assertions, deleted test files). Clean tasks auto-complete as before. Flagged tasks transition to `needs_review` and the orchestrator sends a Telegram DM with the findings, an inline diff preview, a GitHub compare link, and **inline Approve / Reject buttons**:
@@ -71,9 +77,12 @@ Send these to your bot:
 
 | Command | Effect |
 |---------|--------|
-| `/task <description>` | Queue a task. Bot replies with the task id. |
+| `/task <description>` | Queue a task on the default sandbox repo. |
+| `/task <owner>/<repo> <description>` | Queue a task on any repo your GitHub App is installed on. |
 | `/status <id>` | Report the current status of a task. |
 | `/list` | Show the 10 most recent tasks. |
+| `/cancel <id>` | Cancel a queued (not-yet-started) task. |
+| `/retry <id>` | Clone a prior task's description into a new queued task. |
 
 When a task completes, the bot sends a message with the branch name and a link to the branch on GitHub. When a task fails, the bot sends the error.
 
@@ -121,7 +130,8 @@ docs/superpowers/plans # implementation plans (M0 and beyond)
 
 ## Roadmap
 
-- **M0 — plumbing** ← you are here
+- **M0 — plumbing**: SQLite persistence, Telegram loop, Docker runner, dummy agent
 - **M1 — real agent**: Pi + OpenRouter (Kimi K2.5/K2.6), per-task token + 1h timeout caps
 - **M2 — security**: network allowlist per container, secret proxy sidecar, untrusted-content tags, diff-scan reward-hacking guards, GitHub App installation tokens
 - **M3 — approvals + digest**: inline Telegram approval buttons, approval state machine, EOD digest generator
+- **M3.5 — multi-repo** ← you are here: per-task `target_repo`, `/task <owner>/<repo> <desc>` syntax
