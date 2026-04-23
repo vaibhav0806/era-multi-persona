@@ -4,19 +4,32 @@ A personal agent orchestrator that runs tasks via Telegram, executes them in dis
 
 The name reflects the intent: this is the chapter where the typing gets delegated and the focus shifts to describing and reviewing. M0 lays down the chassis; later milestones swap in a real coding agent, network allowlisting, and approval gates.
 
-## Status: Milestone 1 — real coding agent
+## Status: Milestone 2 — security hardening
 
-M1 swaps the dummy entrypoint for **Pi** (`@mariozechner/pi-coding-agent`), routed through **OpenRouter** (default: `moonshotai/kimi-k2.6`). Each task gets caps on tokens, USD cost, iteration count, and wall-clock. Tasks that exceed any cap are aborted before commit/push — no partial work leaks to the sandbox. Cost + token usage are reported back in the completion DM.
+M2 wraps Pi in a hardened sandbox. A second Go binary (`cmd/sidecar`) runs alongside the runner inside the container as the only process with internet access (enforced via iptables with uid-based rules). Pi's HTTP traffic is forced through the sidecar via `HTTPS_PROXY`. The sidecar exposes exactly what Pi needs:
 
-**What M1 still does NOT have** (deferred to M2+):
-- No network allowlist on the runner container — Pi's `bash` tool can reach any host
-- No secret proxy — OpenRouter key + GitHub PAT live in Pi's env (Pi can read them)
-- No prompt-injection guards
-- No diff-scan / reward-hacking detection
-- Still classic PAT (no GitHub App yet)
-- No approval gates or EOD digest (M3)
+- **`/llm/*`** — OpenRouter passthrough with auth injection. Pi's `OPENROUTER_API_KEY` is a dummy; the real key lives only in the sidecar and is injected on forward.
+- **`/search`** — Tavily-backed web search. Returned URL hosts get a short-lived permit so `/fetch` can retrieve them.
+- **`/fetch?url=...`** — fetches pages from allowlisted or search-permitted hosts, with a content-type filter.
+- **`/credentials/git`** — git credential helper returning short-lived GitHub App installation tokens (1hr TTL).
 
-**Rule of thumb for M1:** point era at a throwaway sandbox repo only. Default cost cap is `$0.50` per task, iteration cap `30`, wall-clock `15min`. Watch the first few runs — you're meant to be reviewing, not trusting.
+Classic PATs are **removed from every production code path.** The orchestrator uses a [GitHub App](https://docs.github.com/en/apps) to mint fresh per-task installation tokens via JWT; the token flows through env → sidecar → git credential helper → git push. Leaked tokens expire within the hour.
+
+Every HTTP request the container makes is logged to the `events` table as a `http_request` event — an audit trail you can `sqlite3` into for any task.
+
+**What's proven by passing tests + live smoke:**
+- [x] Container egress locked: non-allowlisted hosts return 403 at the sidecar / TCP RST at iptables
+- [x] Runner's OS env contains neither OpenRouter key nor GitHub token
+- [x] Pi's LLM calls route through `/llm/*` (verified via audit log)
+- [x] Git operations route through `/credentials/git` (verified via audit log)
+- [x] GitHub App tokens minted fresh per task, cached within TTL, refreshed when stale
+
+**What M2 still does NOT have** (deferred to M3):
+- No prompt-injection diff-scan (reward-hacking detection was deferred; the runner's system prompt includes untrusted-content guidance but there's no post-hoc diff gate)
+- No approval gates or inline Telegram buttons
+- No EOD digest
+
+**Rule of thumb for M2:** still use a throwaway sandbox repo. The security improvements mean a compromised Pi cannot read your secrets or exfil to arbitrary hosts — but Pi's `bash` tool still runs freely inside the container, and M2 has no diff-scan gate on reward-hacking patterns.
 
 Full roadmap and implementation plan: [`docs/superpowers/plans/`](./docs/superpowers/plans/).
 
@@ -26,8 +39,9 @@ Full roadmap and implementation plan: [`docs/superpowers/plans/`](./docs/superpo
 - Docker (`brew install --cask docker`)
 - A Telegram bot token (from [@BotFather](https://t.me/BotFather)) and your numeric user ID (message [@userinfobot](https://t.me/userinfobot))
 - A throwaway GitHub repo (e.g. `<you>/era-sandbox` or any sandbox repo you own) with a `README.md` committed
-- A GitHub Personal Access Token (classic PAT with `repo` scope, or fine-grained PAT with `Contents: Read and write` on the sandbox repo)
+- A [GitHub App](https://github.com/settings/apps/new) installed on your sandbox repo with `Contents: Read and write` + `Metadata: Read-only` permissions. Note the App ID, download the private key (.pem), and note the Installation ID from the install URL.
 - An [OpenRouter](https://openrouter.ai) account + API key with at least a few dollars of credit
+- A [Tavily](https://tavily.com) API key (free tier: 1000 queries/mo) for the sidecar's `/search` endpoint
 
 ## Setup
 
