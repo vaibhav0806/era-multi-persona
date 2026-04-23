@@ -177,6 +177,7 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 	branch, summary, tokens, costCents, audits, runErr := q.runner.Run(ctx, t.ID, t.Description, ghToken, effectiveRepo)
 	if runErr != nil {
 		if q.running != nil && q.running.WasKilled(t.ID) {
+			q.running.ClearKilled(t.ID)
 			_ = q.repo.AppendEvent(ctx, t.ID, "cancelled", "{}")
 			if err := q.repo.SetStatus(ctx, t.ID, "cancelled"); err != nil {
 				return true, fmt.Errorf("set cancelled: %w", err)

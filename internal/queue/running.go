@@ -22,10 +22,21 @@ func (r *RunningSet) Register(id int64, name string) {
 	r.m[id] = name
 }
 
+// Deregister removes the container-name mapping. Does NOT clear the killed
+// flag: RunNext reads WasKilled AFTER the runner's docker-kill-triggered exit,
+// and the adapter's defer fires before that read. RunNext calls ClearKilled
+// explicitly after consuming the flag.
 func (r *RunningSet) Deregister(id int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.m, id)
+}
+
+// ClearKilled removes the killed marker for a taskID. Called by RunNext after
+// observing WasKilled, so the map doesn't grow unbounded.
+func (r *RunningSet) ClearKilled(id int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	delete(r.killed, id)
 }
 

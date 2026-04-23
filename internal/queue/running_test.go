@@ -26,8 +26,12 @@ func TestRunningSet_KilledFlag(t *testing.T) {
 	require.False(t, rs.WasKilled(5))
 	rs.MarkKilled(5)
 	require.True(t, rs.WasKilled(5))
-	// Deregister clears the killed flag so re-running task id 5 later isn't poisoned.
+	// Deregister removes the container-name only; killed flag must survive
+	// long enough for RunNext to read it after the adapter's defer fires.
 	rs.Deregister(5)
+	require.True(t, rs.WasKilled(5))
+	// ClearKilled is the explicit way to drop the flag.
+	rs.ClearKilled(5)
 	require.False(t, rs.WasKilled(5))
 }
 
