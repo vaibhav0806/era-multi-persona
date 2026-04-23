@@ -29,7 +29,7 @@ func (q *Queries) AppendEvent(ctx context.Context, arg AppendEventParams) error 
 const claimNextQueuedTask = `-- name: ClaimNextQueuedTask :one
 UPDATE tasks SET status = 'running', started_at = CURRENT_TIMESTAMP
 WHERE id = (SELECT id FROM tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1)
-RETURNING id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at
+RETURNING id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo
 `
 
 func (q *Queries) ClaimNextQueuedTask(ctx context.Context) (Task, error) {
@@ -47,20 +47,26 @@ func (q *Queries) ClaimNextQueuedTask(ctx context.Context) (Task, error) {
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.TargetRepo,
 	)
 	return i, err
 }
 
 const createTask = `-- name: CreateTask :one
 
-INSERT INTO tasks (description, status)
-VALUES (?, 'queued')
-RETURNING id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at
+INSERT INTO tasks (description, status, target_repo)
+VALUES (?, 'queued', ?)
+RETURNING id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo
 `
 
+type CreateTaskParams struct {
+	Description string `json:"description"`
+	TargetRepo  string `json:"target_repo"`
+}
+
 // queries/tasks.sql
-func (q *Queries) CreateTask(ctx context.Context, description string) (Task, error) {
-	row := q.db.QueryRowContext(ctx, createTask, description)
+func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
+	row := q.db.QueryRowContext(ctx, createTask, arg.Description, arg.TargetRepo)
 	var i Task
 	err := row.Scan(
 		&i.ID,
@@ -74,12 +80,13 @@ func (q *Queries) CreateTask(ctx context.Context, description string) (Task, err
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.TargetRepo,
 	)
 	return i, err
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at FROM tasks WHERE id = ? LIMIT 1
+SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo FROM tasks WHERE id = ? LIMIT 1
 `
 
 func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
@@ -97,6 +104,7 @@ func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.TargetRepo,
 	)
 	return i, err
 }
@@ -135,7 +143,7 @@ func (q *Queries) ListEventsForTask(ctx context.Context, taskID int64) ([]Event,
 }
 
 const listRecentTasks = `-- name: ListRecentTasks :many
-SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at FROM tasks ORDER BY created_at DESC LIMIT ?
+SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo FROM tasks ORDER BY created_at DESC LIMIT ?
 `
 
 func (q *Queries) ListRecentTasks(ctx context.Context, limit int64) ([]Task, error) {
@@ -159,6 +167,7 @@ func (q *Queries) ListRecentTasks(ctx context.Context, limit int64) ([]Task, err
 			&i.CreatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.TargetRepo,
 		); err != nil {
 			return nil, err
 		}
@@ -174,7 +183,7 @@ func (q *Queries) ListRecentTasks(ctx context.Context, limit int64) ([]Task, err
 }
 
 const listTasksBetween = `-- name: ListTasksBetween :many
-SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at FROM tasks
+SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo FROM tasks
 WHERE created_at >= ? AND created_at < ?
 ORDER BY id ASC
 `
@@ -205,6 +214,7 @@ func (q *Queries) ListTasksBetween(ctx context.Context, arg ListTasksBetweenPara
 			&i.CreatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.TargetRepo,
 		); err != nil {
 			return nil, err
 		}

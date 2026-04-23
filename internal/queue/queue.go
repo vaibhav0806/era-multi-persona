@@ -87,8 +87,11 @@ func New(repo *db.Repo, runner Runner, tokens TokenSource, compare DiffSource, r
 // startup; do not change mid-flight — RunNext reads the field without a lock.
 func (q *Queue) SetNotifier(n Notifier) { q.notifier = n }
 
+// Keep back-compat: existing callers still pass just description; M3.5-2
+// extends with optional repo arg. For M3.5-1, CreateTask just passes "" to
+// the repo.
 func (q *Queue) CreateTask(ctx context.Context, desc string) (int64, error) {
-	t, err := q.repo.CreateTask(ctx, desc)
+	t, err := q.repo.CreateTask(ctx, desc, "")
 	if err != nil {
 		return 0, err
 	}
@@ -331,7 +334,7 @@ func (q *Queue) RetryTask(ctx context.Context, id int64) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("get original task: %w", err)
 	}
-	newTask, err := q.repo.CreateTask(ctx, orig.Description)
+	newTask, err := q.repo.CreateTask(ctx, orig.Description, "")
 	if err != nil {
 		return 0, fmt.Errorf("create retry task: %w", err)
 	}

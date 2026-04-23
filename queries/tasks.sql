@@ -1,8 +1,8 @@
 -- queries/tasks.sql
 
 -- name: CreateTask :one
-INSERT INTO tasks (description, status)
-VALUES (?, 'queued')
+INSERT INTO tasks (description, status, target_repo)
+VALUES (?, 'queued', ?)
 RETURNING *;
 
 -- name: GetTask :one

@@ -18,8 +18,11 @@ func NewRepo(h *Handle) *Repo {
 	return &Repo{q: New(h.Raw())}
 }
 
-func (r *Repo) CreateTask(ctx context.Context, desc string) (Task, error) {
-	return r.q.CreateTask(ctx, desc)
+func (r *Repo) CreateTask(ctx context.Context, desc, targetRepo string) (Task, error) {
+	return r.q.CreateTask(ctx, CreateTaskParams{
+		Description: desc,
+		TargetRepo:  targetRepo,
+	})
 }
 
 func (r *Repo) GetTask(ctx context.Context, id int64) (Task, error) {

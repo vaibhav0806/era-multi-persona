@@ -38,4 +38,5 @@ type Task struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	StartedAt   sql.NullTime   `json:"started_at"`
 	FinishedAt  sql.NullTime   `json:"finished_at"`
+	TargetRepo  string         `json:"target_repo"`
 }

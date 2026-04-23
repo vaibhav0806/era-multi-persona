@@ -448,7 +448,7 @@ func TestQueue_RejectTask_NeedsReviewToRejected_DeletesBranch(t *testing.T) {
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
 	bd := &fakeBranchDeleter{}
 	q.SetBranchDeleter(bd)
-	task, _ := repo.CreateTask(ctx, "x")
+	task, _ := repo.CreateTask(ctx, "x", "")
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")
 	require.NoError(t, repo.CompleteTask(ctx, task.ID, "agent/1/foo", "s", 0, 0))
 	_ = repo.SetStatus(ctx, task.ID, "needs_review") // re-set since CompleteTask sets completed
@@ -467,7 +467,7 @@ func TestQueue_ApproveTask_AlreadyRejected_Errors(t *testing.T) {
 	ctx := context.Background()
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
 	q.SetBranchDeleter(&fakeBranchDeleter{})
-	task, _ := repo.CreateTask(ctx, "x")
+	task, _ := repo.CreateTask(ctx, "x", "")
 	_ = repo.SetStatus(ctx, task.ID, "rejected")
 
 	err := q.ApproveTask(ctx, task.ID)
@@ -479,7 +479,7 @@ func TestQueue_RejectTask_AlreadyApproved_Errors(t *testing.T) {
 	ctx := context.Background()
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
 	q.SetBranchDeleter(&fakeBranchDeleter{})
-	task, _ := repo.CreateTask(ctx, "x")
+	task, _ := repo.CreateTask(ctx, "x", "")
 	_ = repo.SetStatus(ctx, task.ID, "approved")
 
 	err := q.RejectTask(ctx, task.ID)
@@ -492,7 +492,7 @@ func TestQueue_RejectTask_BranchDeleterError_PropagatesButStatusStillChanges(t *
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
 	bd := &fakeBranchDeleter{err: errors.New("github 422")}
 	q.SetBranchDeleter(bd)
-	task, _ := repo.CreateTask(ctx, "x")
+	task, _ := repo.CreateTask(ctx, "x", "")
 	_ = repo.CompleteTask(ctx, task.ID, "agent/1/bar", "s", 0, 0)
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")
 
