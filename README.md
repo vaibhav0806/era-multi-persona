@@ -4,6 +4,17 @@ A personal agent orchestrator that runs tasks via Telegram, executes them in dis
 
 The name reflects the intent: this is the chapter where the typing gets delegated and the focus shifts to describing and reviewing. M0 lays down the chassis; later milestones swap in a real coding agent, network allowlisting, and approval gates.
 
+## Status: Milestone 4 — deployment, PRs, mid-run cancel, read-only answers
+
+M4 shipped four things:
+
+1. **Deployment to a Hetzner CAX11 VPS.** Era now runs 24/7 from `era@178.105.44.3` under systemd, not the user's laptop. One-shot `deploy/install.sh` bootstraps a fresh Ubuntu 24.04 box: installs docker + Go 1.25, creates a non-root `era` user, enables UFW + unattended-upgrades, drops in a hardened systemd unit, schedules a nightly SQLite backup with 7-day retention, disables root SSH once the era user's key is verified. Code updates go out via `make deploy VPS_HOST=...`.
+2. **PR creation on every completed task.** The orchestrator opens a GitHub PR after push via a new `internal/githubpr/` client. Clean tasks DM the PR URL; flagged tasks DM the same PR URL alongside the inline diff + Approve/Reject buttons. **Approve** leaves the PR open (never auto-merges — the user merges manually). **Reject** closes the PR first, then deletes the branch. Base branch is auto-detected via the repo's `default_branch` API, not hardcoded.
+3. **Mid-run `/cancel` via docker kill.** A `/cancel <id>` against a running task kills the Docker container in <2s. Orchestrator observes the kill (via a `RunningSet` flag written before `docker kill`), transitions the task to `cancelled` instead of `failed`, and DMs "cancelled mid-run". A startup reconcile sweeps any orphan `running` tasks to `failed` with a `reconciled_failed` event, so a restart-during-deploy doesn't leave ghosts.
+4. **Pi's real prose in completion DMs.** The runner's RESULT line was space-delimited key=value, which mangled spaces in Pi's assistant text. Switched it to `RESULT <json>`. Runner now captures the last assistant text block from Pi's `message_end` events and surfaces it as the summary — both for committed tasks and read-only "what does the README say?" queries that don't commit anything. DMs are truncated rune-safely at 3500 bytes with a "(N bytes truncated)" footer.
+
+Everything from M3.5 still applies — multi-repo per task (`/task owner/repo <desc>`), approvals, EOD digest, `/retry`, diff-scan, iptables egress lockdown, GitHub App tokens, audit log.
+
 ## Status: Milestone 3.5 — multi-repo per task
 
 M3.5 lets a single orchestrator drive tasks across any repo the GitHub App is installed on. Send `/task vaibhav0806/my-side-project add a README` and era clones that repo, runs the agent, and pushes a branch there — completion DM links to the right repo. No orchestrator restart needed to switch targets. Tasks without a repo prefix still run on the sandbox default.
@@ -134,4 +145,5 @@ docs/superpowers/plans # implementation plans (M0 and beyond)
 - **M1 — real agent**: Pi + OpenRouter (Kimi K2.5/K2.6), per-task token + 1h timeout caps
 - **M2 — security**: network allowlist per container, secret proxy sidecar, untrusted-content tags, diff-scan reward-hacking guards, GitHub App installation tokens
 - **M3 — approvals + digest**: inline Telegram approval buttons, approval state machine, EOD digest generator
-- **M3.5 — multi-repo** ← you are here: per-task `target_repo`, `/task <owner>/<repo> <desc>` syntax
+- **M3.5 — multi-repo**: per-task `target_repo`, `/task <owner>/<repo> <desc>` syntax
+- **M4 — deployment + PRs + cancel + prose** ← you are here: Hetzner VPS via `deploy/install.sh` + `make deploy`, PR-per-task on clean/flagged paths, mid-run `/cancel` via docker kill, Pi's actual text in DMs
