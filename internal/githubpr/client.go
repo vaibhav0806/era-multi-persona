@@ -106,6 +106,25 @@ func (c *Client) Create(ctx context.Context, args CreateArgs) (*PR, error) {
 	return &pr, nil
 }
 
+// Close sets the state of pull request number on repo (owner/repo) to closed.
+func (c *Client) Close(ctx context.Context, repo string, number int) error {
+	payload, _ := json.Marshal(map[string]string{"state": "closed"})
+	req, err := c.newReq(ctx, "PATCH", fmt.Sprintf("/repos/%s/pulls/%d", repo, number), bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("close pr: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("close pr %s#%d: %d %s", repo, number, resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 func (c *Client) newReq(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
 	tok, err := c.tokens.InstallationToken(ctx)
 	if err != nil {

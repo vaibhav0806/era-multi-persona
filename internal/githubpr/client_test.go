@@ -90,3 +90,20 @@ func TestCreate_422Error(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "422")
 }
+
+func TestClose_PatchesStateClosed(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "PATCH", r.Method)
+		require.Equal(t, "/repos/owner/repo/pulls/42", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		require.Equal(t, "closed", gotBody["state"])
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"number":42,"state":"closed"}`))
+	}))
+	defer srv.Close()
+	c := githubpr.New(srv.URL, &fakeTokens{tok: "ghs_test"})
+
+	err := c.Close(context.Background(), "owner/repo", 42)
+	require.NoError(t, err)
+}
