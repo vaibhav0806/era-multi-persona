@@ -10,18 +10,36 @@ import (
 
 func newServer(addr string) *http.Server {
 	allow := newAllowlist()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+
+	healthHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
+	var testPermitHandler http.HandlerFunc
 	if os.Getenv("PI_SIDECAR_TEST_HOOKS") == "1" {
-		mux.HandleFunc("/_test/permit", newTestPermitHandler(allow))
+		testPermitHandler = newTestPermitHandler(allow)
 	}
-	// Anything else falls through to the proxy.
 	proxy := newProxyHandler(allow)
-	mux.Handle("/", proxy)
 
-	audited := newAuditMiddleware(os.Stderr)(mux)
+	// Route manually instead of using http.ServeMux. Go 1.22+ ServeMux
+	// normalises paths and issues 301 redirects for CONNECT requests that
+	// arrive with an empty path, breaking the forward-proxy tunnel. A plain
+	// HandlerFunc avoids that redirect entirely.
+	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			healthHandler.ServeHTTP(w, r)
+		case "/_test/permit":
+			if testPermitHandler != nil {
+				testPermitHandler.ServeHTTP(w, r)
+				return
+			}
+			http.NotFound(w, r)
+		default:
+			proxy.ServeHTTP(w, r)
+		}
+	})
+
+	audited := newAuditMiddleware(os.Stderr)(root)
 	return &http.Server{
 		Addr:              addr,
 		Handler:           audited,

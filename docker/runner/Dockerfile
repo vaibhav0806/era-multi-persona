@@ -2,7 +2,7 @@ FROM node:22-alpine
 
 # git for the runner; bash + wget for the entrypoint script; iptables for
 # Phase K (Phase J doesn't use it yet but installing now avoids a rebuild).
-RUN apk add --no-cache git bash ca-certificates coreutils iptables wget
+RUN apk add --no-cache git bash ca-certificates coreutils curl iptables wget
 
 ARG PI_VERSION=latest
 RUN npm install -g @mariozechner/pi-coding-agent@${PI_VERSION} \

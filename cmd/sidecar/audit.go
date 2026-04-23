@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"time"
 )
@@ -55,4 +57,10 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	n, err := s.ResponseWriter.Write(b)
 	s.bytes += n
 	return n, err
+}
+
+// Hijack delegates to the underlying ResponseWriter if it supports hijacking.
+// Required so the CONNECT proxy handler can take over the TCP connection.
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return s.ResponseWriter.(http.Hijacker).Hijack()
 }

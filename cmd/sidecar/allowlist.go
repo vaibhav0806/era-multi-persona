@@ -10,8 +10,8 @@ import (
 // staticHosts are always permitted. Hostnames are matched exactly OR as a
 // suffix-with-leading-dot (so "foo.example.com" matches ".example.com" entry).
 var staticHosts = []string{
-	// LLM
-	"api.openrouter.ai",
+	// LLM (openrouter.ai hosts the API at the apex domain; api.openrouter.ai is NXDOMAIN)
+	"openrouter.ai",
 	// GitHub (push, clone, raw)
 	"github.com", "api.github.com",
 	"raw.githubusercontent.com", "objects.githubusercontent.com",

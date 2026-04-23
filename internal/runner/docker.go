@@ -51,6 +51,8 @@ type RunOutput struct {
 func (d *Docker) Run(ctx context.Context, in RunInput) (*RunOutput, error) {
 	args := []string{
 		"run", "--rm",
+		"--cap-add=NET_ADMIN", // for iptables inside container
+		"--cap-add=NET_RAW",   // for REJECT --reject-with tcp-reset
 		"-e", fmt.Sprintf("ERA_TASK_ID=%d", in.TaskID),
 		"-e", fmt.Sprintf("ERA_TASK_DESCRIPTION=%s", in.Description),
 		"-e", fmt.Sprintf("ERA_GITHUB_PAT=%s", d.GitHubPAT),

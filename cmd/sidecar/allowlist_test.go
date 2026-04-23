@@ -9,7 +9,7 @@ import (
 
 func TestAllowlist_StaticHostsAllowed(t *testing.T) {
 	a := newAllowlist()
-	require.True(t, a.allowed("api.openrouter.ai"))
+	require.True(t, a.allowed("openrouter.ai"))
 	require.True(t, a.allowed("github.com"))
 	require.True(t, a.allowed("api.github.com"))
 	require.True(t, a.allowed("registry.npmjs.org"))
