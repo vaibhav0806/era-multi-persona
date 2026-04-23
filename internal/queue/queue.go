@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/vaibhav0806/era/internal/audit"
 	"github.com/vaibhav0806/era/internal/db"
@@ -54,13 +56,21 @@ type Notifier interface {
 	NotifyNeedsReview(ctx context.Context, args NeedsReviewArgs)
 }
 
+// BranchDeleter deletes a remote branch. Implemented by internal/githubbranch
+// (M3-14) using App installation tokens; may be nil for tests that don't
+// exercise the reject path.
+type BranchDeleter interface {
+	DeleteBranch(ctx context.Context, repo, branch string) error
+}
+
 type Queue struct {
-	repo     *db.Repo
-	runner   Runner
-	notifier Notifier
-	tokens   TokenSource // may be nil
-	compare  DiffSource  // may be nil
-	repoFQN  string      // owner/repo for compare lookups
+	repo          *db.Repo
+	runner        Runner
+	notifier      Notifier
+	tokens        TokenSource   // may be nil
+	compare       DiffSource    // may be nil
+	repoFQN       string        // owner/repo for compare lookups
+	branchDeleter BranchDeleter // may be nil
 }
 
 func New(repo *db.Repo, runner Runner, tokens TokenSource, compare DiffSource, repoFQN string) *Queue {
@@ -208,9 +218,85 @@ func quoteJSON(s string) string {
 	return string(b)
 }
 
-// HandleApproval — real implementation in M3-13.
+// SetBranchDeleter attaches a BranchDeleter to this Queue.
+func (q *Queue) SetBranchDeleter(bd BranchDeleter) { q.branchDeleter = bd }
+
+// ApproveTask transitions needs_review → approved. No-op on already-approved.
+// Errors on any other current status.
+func (q *Queue) ApproveTask(ctx context.Context, id int64) error {
+	task, err := q.repo.GetTask(ctx, id)
+	if err != nil {
+		return fmt.Errorf("get task: %w", err)
+	}
+	switch task.Status {
+	case "approved":
+		return nil // idempotent
+	case "needs_review":
+		if err := q.repo.SetStatus(ctx, id, "approved"); err != nil {
+			return fmt.Errorf("set status: %w", err)
+		}
+		_ = q.repo.AppendEvent(ctx, id, "approved", "{}")
+		return nil
+	default:
+		return fmt.Errorf("cannot approve task in state %q", task.Status)
+	}
+}
+
+// RejectTask transitions needs_review → rejected and deletes the branch.
+// No-op on already-rejected (status stays, no re-delete). Errors on other
+// states.
+func (q *Queue) RejectTask(ctx context.Context, id int64) error {
+	task, err := q.repo.GetTask(ctx, id)
+	if err != nil {
+		return fmt.Errorf("get task: %w", err)
+	}
+	switch task.Status {
+	case "rejected":
+		return nil // idempotent
+	case "needs_review":
+		if err := q.repo.SetStatus(ctx, id, "rejected"); err != nil {
+			return fmt.Errorf("set status: %w", err)
+		}
+		_ = q.repo.AppendEvent(ctx, id, "rejected", "{}")
+		if q.branchDeleter != nil && task.BranchName.Valid && task.BranchName.String != "" {
+			if err := q.branchDeleter.DeleteBranch(ctx, q.repoFQN, task.BranchName.String); err != nil {
+				// Don't roll back the status change — user intent has been
+				// recorded. Surface the error so the caller (callback handler)
+				// can show it in the toast.
+				return fmt.Errorf("branch delete: %w", err)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("cannot reject task in state %q", task.Status)
+	}
+}
+
+// HandleApproval parses callback data "approve:<id>" / "reject:<id>" and
+// dispatches. Returns the reply text (used by the callback answer).
 func (q *Queue) HandleApproval(ctx context.Context, data string) (string, error) {
-	return "", fmt.Errorf("HandleApproval: not implemented until M3-13")
+	parts := strings.SplitN(data, ":", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("bad callback data: %q", data)
+	}
+	id, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return "", fmt.Errorf("bad id: %w", err)
+	}
+	switch parts[0] {
+	case "approve":
+		if err := q.ApproveTask(ctx, id); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("task #%d approved", id), nil
+	case "reject":
+		if err := q.RejectTask(ctx, id); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("task #%d rejected", id), nil
+	default:
+		return "", fmt.Errorf("unknown action: %q", parts[0])
+	}
 }
 
 // CancelTask — real implementation in M3-19.

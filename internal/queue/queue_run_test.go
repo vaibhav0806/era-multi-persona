@@ -413,3 +413,103 @@ func TestQueue_RunNext_FlaggedDiff_CallsNotifyNeedsReview(t *testing.T) {
 	require.NotEmpty(t, n.needsReview[0].Findings)
 	require.Equal(t, "removed_test", n.needsReview[0].Findings[0].Rule)
 }
+
+type fakeBranchDeleter struct {
+	deleted []string
+	err     error
+}
+
+func (f *fakeBranchDeleter) DeleteBranch(ctx context.Context, repo, branch string) error {
+	f.deleted = append(f.deleted, branch)
+	return f.err
+}
+
+func TestQueue_ApproveTask_NeedsReviewToApproved(t *testing.T) {
+	ctx := context.Background()
+	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
+	bd := &fakeBranchDeleter{}
+	q.SetBranchDeleter(bd)
+	id, _ := q.CreateTask(ctx, "x")
+	require.NoError(t, repo.SetStatus(ctx, id, "needs_review"))
+
+	require.NoError(t, q.ApproveTask(ctx, id))
+	task, _ := repo.GetTask(ctx, id)
+	require.Equal(t, "approved", task.Status)
+	require.Empty(t, bd.deleted, "approve should NOT delete branch")
+
+	// Idempotent second call
+	require.NoError(t, q.ApproveTask(ctx, id))
+	task, _ = repo.GetTask(ctx, id)
+	require.Equal(t, "approved", task.Status)
+}
+
+func TestQueue_RejectTask_NeedsReviewToRejected_DeletesBranch(t *testing.T) {
+	ctx := context.Background()
+	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
+	bd := &fakeBranchDeleter{}
+	q.SetBranchDeleter(bd)
+	task, _ := repo.CreateTask(ctx, "x")
+	_ = repo.SetStatus(ctx, task.ID, "needs_review")
+	require.NoError(t, repo.CompleteTask(ctx, task.ID, "agent/1/foo", "s", 0, 0))
+	_ = repo.SetStatus(ctx, task.ID, "needs_review") // re-set since CompleteTask sets completed
+
+	require.NoError(t, q.RejectTask(ctx, task.ID))
+	got, _ := repo.GetTask(ctx, task.ID)
+	require.Equal(t, "rejected", got.Status)
+	require.Equal(t, []string{"agent/1/foo"}, bd.deleted, "reject must delete branch")
+
+	// Idempotent
+	require.NoError(t, q.RejectTask(ctx, task.ID))
+	require.Equal(t, []string{"agent/1/foo"}, bd.deleted, "double-reject does NOT re-delete")
+}
+
+func TestQueue_ApproveTask_AlreadyRejected_Errors(t *testing.T) {
+	ctx := context.Background()
+	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
+	q.SetBranchDeleter(&fakeBranchDeleter{})
+	task, _ := repo.CreateTask(ctx, "x")
+	_ = repo.SetStatus(ctx, task.ID, "rejected")
+
+	err := q.ApproveTask(ctx, task.ID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "rejected")
+}
+
+func TestQueue_RejectTask_AlreadyApproved_Errors(t *testing.T) {
+	ctx := context.Background()
+	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
+	q.SetBranchDeleter(&fakeBranchDeleter{})
+	task, _ := repo.CreateTask(ctx, "x")
+	_ = repo.SetStatus(ctx, task.ID, "approved")
+
+	err := q.RejectTask(ctx, task.ID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "approved")
+}
+
+func TestQueue_RejectTask_BranchDeleterError_PropagatesButStatusStillChanges(t *testing.T) {
+	ctx := context.Background()
+	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
+	bd := &fakeBranchDeleter{err: errors.New("github 422")}
+	q.SetBranchDeleter(bd)
+	task, _ := repo.CreateTask(ctx, "x")
+	_ = repo.CompleteTask(ctx, task.ID, "agent/1/bar", "s", 0, 0)
+	_ = repo.SetStatus(ctx, task.ID, "needs_review")
+
+	// The branch deletion fails but we still mark rejected — user intent
+	// wins; they can manually delete the branch in GitHub if needed.
+	err := q.RejectTask(ctx, task.ID)
+	require.Error(t, err) // propagate the delete error
+	got, _ := repo.GetTask(ctx, task.ID)
+	require.Equal(t, "rejected", got.Status, "status changes even if delete fails")
+}
+
+func TestQueue_ApproveTask_WrongStatus_Errors(t *testing.T) {
+	ctx := context.Background()
+	q, _ := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
+	q.SetBranchDeleter(&fakeBranchDeleter{})
+	// queued status — can't approve
+	id, _ := q.CreateTask(ctx, "x")
+	err := q.ApproveTask(ctx, id)
+	require.Error(t, err)
+}
