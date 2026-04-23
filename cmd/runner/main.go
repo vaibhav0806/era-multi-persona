@@ -81,7 +81,7 @@ func run(ctx context.Context, cfg *runnerConfig) error {
 	case commitErr == nil:
 		writeResult(os.Stdout, runResult{
 			Branch:    branch,
-			Summary:   piSummary(summary, piErr),
+			Summary:   finalSummary(summary, piErr),
 			Tokens:    tokens,
 			CostCents: int(math.Round(costUSD * 100)),
 		})
@@ -90,7 +90,7 @@ func run(ctx context.Context, cfg *runnerConfig) error {
 		// Pi ran but made no edits. Surface this distinctly.
 		writeResult(os.Stdout, runResult{
 			Branch:    "",
-			Summary:   "no_changes",
+			Summary:   finalSummary(summary, piErr),
 			Tokens:    tokens,
 			CostCents: int(math.Round(costUSD * 100)),
 		})
@@ -103,11 +103,14 @@ func run(ctx context.Context, cfg *runnerConfig) error {
 	}
 }
 
-func piSummary(s *runSummary, err error) string {
+func finalSummary(s *runSummary, err error) string {
 	if err != nil {
 		return "aborted_" + sanitize(err.Error())
 	}
-	return fmt.Sprintf("ok_tokens=%d_cost=%.4f", s.TotalTokens, s.TotalCostUSD)
+	if s.LastText != "" {
+		return s.LastText
+	}
+	return "(no final message from pi)"
 }
 
 func sanitize(s string) string {

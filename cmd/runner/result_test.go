@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -39,4 +40,20 @@ func TestWriteResult_EmptySummaryOK(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(payload), &got))
 	require.Equal(t, "b", got.Branch)
 	require.Equal(t, "", got.Summary)
+}
+
+func TestFinalSummary_UsesLastTextWhenPresent(t *testing.T) {
+	s := &runSummary{LastText: "Pi said something useful"}
+	require.Equal(t, "Pi said something useful", finalSummary(s, nil))
+}
+
+func TestFinalSummary_FallsBackWhenEmpty(t *testing.T) {
+	s := &runSummary{}
+	require.Equal(t, "(no final message from pi)", finalSummary(s, nil))
+}
+
+func TestFinalSummary_Aborted(t *testing.T) {
+	s := &runSummary{LastText: "should be ignored"}
+	got := finalSummary(s, errors.New("wall clock cap fired"))
+	require.Contains(t, got, "aborted_")
 }
