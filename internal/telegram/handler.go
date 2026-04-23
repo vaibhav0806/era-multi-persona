@@ -25,6 +25,11 @@ type Ops interface {
 	CreateTask(ctx context.Context, desc string) (int64, error)
 	TaskStatus(ctx context.Context, id int64) (string, error)
 	ListRecent(ctx context.Context, limit int) ([]TaskSummary, error)
+	HandleApproval(ctx context.Context, data string) (replyText string, err error)
+	// M3-9 command wires: the interface methods are declared here;
+	// the handler dispatch lines are added in M3-9.
+	CancelTask(ctx context.Context, id int64) error
+	RetryTask(ctx context.Context, id int64) (newID int64, err error)
 }
 
 type Handler struct {
@@ -35,6 +40,11 @@ type Handler struct {
 func NewHandler(c Client, ops Ops) *Handler { return &Handler{client: c, ops: ops} }
 
 func (h *Handler) Handle(ctx context.Context, u Update) error {
+	// M3: callback queries (button taps)
+	if u.Callback != nil {
+		return h.handleCallback(ctx, u)
+	}
+
 	text := strings.TrimSpace(u.Text)
 	switch {
 	case strings.HasPrefix(text, "/task "):
@@ -80,4 +90,15 @@ func (h *Handler) Handle(ctx context.Context, u Update) error {
 	default:
 		return h.client.SendMessage(ctx, u.ChatID, "unknown command. try /task, /status, /list")
 	}
+}
+
+func (h *Handler) handleCallback(ctx context.Context, u Update) error {
+	reply, err := h.ops.HandleApproval(ctx, u.Callback.Data)
+	if err != nil {
+		// Answer with error message so user sees it as a toast; do not
+		// bubble up (Telegram callback errors shouldn't crash the loop).
+		_ = h.client.AnswerCallback(ctx, u.Callback.ID, "error: "+err.Error())
+		return nil
+	}
+	return h.client.AnswerCallback(ctx, u.Callback.ID, reply)
 }

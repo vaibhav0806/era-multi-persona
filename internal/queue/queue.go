@@ -176,5 +176,20 @@ func quoteJSON(s string) string {
 	return string(b)
 }
 
+// HandleApproval — real implementation in M3-13.
+func (q *Queue) HandleApproval(ctx context.Context, data string) (string, error) {
+	return "", fmt.Errorf("HandleApproval: not implemented until M3-13")
+}
+
+// CancelTask — real implementation in M3-19.
+func (q *Queue) CancelTask(ctx context.Context, id int64) error {
+	return fmt.Errorf("CancelTask: not implemented until M3-19")
+}
+
+// RetryTask — real implementation in M3-20.
+func (q *Queue) RetryTask(ctx context.Context, id int64) (int64, error) {
+	return 0, fmt.Errorf("RetryTask: not implemented until M3-20")
+}
+
 // compile-time assertion that Queue satisfies telegram.Ops
 var _ telegram.Ops = (*Queue)(nil)
