@@ -493,7 +493,7 @@ func TestQueue_RejectTask_AlreadyApproved_Errors(t *testing.T) {
 	require.Contains(t, err.Error(), "approved")
 }
 
-func TestQueue_RejectTask_BranchDeleterError_PropagatesButStatusStillChanges(t *testing.T) {
+func TestQueue_RejectTask_BranchDeleterError_LoggedNotPropagated(t *testing.T) {
 	ctx := context.Background()
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
 	bd := &fakeBranchDeleter{err: errors.New("github 422")}
@@ -502,12 +502,20 @@ func TestQueue_RejectTask_BranchDeleterError_PropagatesButStatusStillChanges(t *
 	_ = repo.CompleteTask(ctx, task.ID, "agent/1/bar", "s", 0, 0)
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")
 
-	// The branch deletion fails but we still mark rejected — user intent
-	// wins; they can manually delete the branch in GitHub if needed.
+	// Branch delete errors are logged as events but do not block the transition.
 	err := q.RejectTask(ctx, task.ID)
-	require.Error(t, err) // propagate the delete error
+	require.NoError(t, err)
 	got, _ := repo.GetTask(ctx, task.ID)
 	require.Equal(t, "rejected", got.Status, "status changes even if delete fails")
+
+	events, _ := repo.ListEvents(ctx, task.ID)
+	sawErr := false
+	for _, e := range events {
+		if e.Kind == "branch_delete_error" {
+			sawErr = true
+		}
+	}
+	require.True(t, sawErr, "branch_delete_error event must be logged")
 }
 
 func TestQueue_ApproveTask_WrongStatus_Errors(t *testing.T) {

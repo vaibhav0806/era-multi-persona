@@ -291,38 +291,53 @@ func (q *Queue) ApproveTask(ctx context.Context, id int64) error {
 	}
 }
 
-// RejectTask transitions needs_review → rejected and deletes the branch.
-// No-op on already-rejected (status stays, no re-delete). Errors on other
-// states.
+// RejectTask transitions needs_review → rejected, closes the PR, and deletes
+// the branch. No-op on already-rejected (idempotent). Errors on other states.
+// PR-close and branch-delete failures are logged as events but do not block
+// the transition.
 func (q *Queue) RejectTask(ctx context.Context, id int64) error {
-	task, err := q.repo.GetTask(ctx, id)
+	t, err := q.repo.GetTask(ctx, id)
 	if err != nil {
 		return fmt.Errorf("get task: %w", err)
 	}
-	switch task.Status {
+	switch t.Status {
 	case "rejected":
 		return nil // idempotent
 	case "needs_review":
-		if err := q.repo.SetStatus(ctx, id, "rejected"); err != nil {
-			return fmt.Errorf("set status: %w", err)
-		}
-		_ = q.repo.AppendEvent(ctx, id, "rejected", "{}")
-		if q.branchDeleter != nil && task.BranchName.Valid && task.BranchName.String != "" {
-			effectiveRepo := task.TargetRepo
-			if effectiveRepo == "" {
-				effectiveRepo = q.repoFQN
-			}
-			if err := q.branchDeleter.DeleteBranch(ctx, effectiveRepo, task.BranchName.String); err != nil {
-				// Don't roll back the status change — user intent has been
-				// recorded. Surface the error so the caller (callback handler)
-				// can show it in the toast.
-				return fmt.Errorf("branch delete: %w", err)
-			}
-		}
-		return nil
+		// fall through
 	default:
-		return fmt.Errorf("cannot reject task in state %q", task.Status)
+		return fmt.Errorf("cannot reject task in state %q", t.Status)
 	}
+
+	effectiveRepo := t.TargetRepo
+	if effectiveRepo == "" {
+		effectiveRepo = q.repoFQN
+	}
+
+	// 1. Close PR first
+	if t.PrNumber.Valid && q.prCreator != nil {
+		if err := q.prCreator.Close(ctx, effectiveRepo, int(t.PrNumber.Int64)); err != nil {
+			_ = q.repo.AppendEvent(ctx, id, "pr_close_error", quoteJSON(err.Error()))
+		} else {
+			_ = q.repo.AppendEvent(ctx, id, "pr_closed", "{}")
+		}
+	}
+
+	// 2. Delete branch
+	if t.BranchName.Valid && q.branchDeleter != nil && t.BranchName.String != "" {
+		if err := q.branchDeleter.DeleteBranch(ctx, effectiveRepo, t.BranchName.String); err != nil {
+			_ = q.repo.AppendEvent(ctx, id, "branch_delete_error", quoteJSON(err.Error()))
+		} else {
+			_ = q.repo.AppendEvent(ctx, id, "branch_deleted", "{}")
+		}
+	}
+
+	// 3. Transition task
+	if err := q.repo.SetStatus(ctx, id, "rejected"); err != nil {
+		return fmt.Errorf("set status: %w", err)
+	}
+	_ = q.repo.AppendEvent(ctx, id, "rejected", "{}")
+	return nil
 }
 
 // HandleApproval parses callback data "approve:<id>" / "reject:<id>" and
