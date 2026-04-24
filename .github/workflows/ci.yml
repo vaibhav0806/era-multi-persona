@@ -35,8 +35,12 @@ jobs:
                 echo "SKIP (docker): $f"
                 continue
                 ;;
-              *phase_b_db.sh|*phase_f_schema.sh)
+              *phase_b_db.sh|*phase_f_schema.sh|*phase_p_diffscan.sh)
                 echo "SKIP (needs goose binary): $f"
+                continue
+                ;;
+              *phase_o_githubapp.sh)
+                echo "SKIP (needs .env + built binary): $f"
                 continue
                 ;;
             esac
