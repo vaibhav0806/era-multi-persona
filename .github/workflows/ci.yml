@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: go vet
+        run: go vet ./...
+      - name: gofmt check
+        run: |
+          bad="$(gofmt -l .)"
+          if [ -n "$bad" ]; then
+            echo "unformatted files:"
+            echo "$bad"
+            exit 1
+          fi
+      - name: test
+        run: go test -race -count=1 ./...
+      - name: build
+        run: go build ./...
+      - name: phase smokes (non-docker)
+        run: |
+          for f in scripts/smoke/phase_*.sh; do
+            case "$f" in
+              *phase_ab_tooling.sh|*phase_h_docker.sh|*phase_i_e2e.sh|*phase_j_sidecar.sh|*phase_k_netlock.sh|*phase_l_search.sh|*phase_m_secrets.sh)
+                echo "SKIP (docker): $f"
+                continue
+                ;;
+            esac
+            echo "--- $f ---"
+            bash "$f"
+          done
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    # M5-AF-3: deploy disabled until we confirm test gate is stable.
+    # Re-enable in task AF-5 by removing the `false && ` prefix.
+    if: false && github.ref == 'refs/heads/master' && github.event_name == 'push'
+    steps:
+      - name: SSH setup
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 178.105.44.3 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Deploy
+        run: |
+          ssh era@178.105.44.3 'cd /opt/era && \
+            git pull origin master && \
+            export PATH=/usr/local/go/bin:$PATH && \
+            make build && \
+            make docker-runner && \
+            sudo systemctl restart era && \
+            sudo systemctl status era'
