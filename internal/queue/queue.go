@@ -361,9 +361,17 @@ func (q *Queue) RejectTask(ctx context.Context, id int64) error {
 		effectiveRepo = q.repoFQN
 	}
 
-	// 1. Close PR first
+	// 1. Comment, then close PR
 	if t.PrNumber.Valid && q.prCreator != nil {
-		if err := q.prCreator.Close(ctx, effectiveRepo, int(t.PrNumber.Int64)); err != nil {
+		n := int(t.PrNumber.Int64)
+		findings := loadFindings(ctx, q.repo, id)
+		commentBody := RejectionCommentBody(findings)
+		if err := q.prCreator.AddComment(ctx, effectiveRepo, n, commentBody); err != nil {
+			_ = q.repo.AppendEvent(ctx, id, "pr_comment_error", quoteJSON(err.Error()))
+		} else {
+			_ = q.repo.AppendEvent(ctx, id, "pr_commented_rejected", "{}")
+		}
+		if err := q.prCreator.Close(ctx, effectiveRepo, n); err != nil {
 			_ = q.repo.AppendEvent(ctx, id, "pr_close_error", quoteJSON(err.Error()))
 		} else {
 			_ = q.repo.AppendEvent(ctx, id, "pr_closed", "{}")
@@ -384,6 +392,24 @@ func (q *Queue) RejectTask(ctx context.Context, id int64) error {
 		return fmt.Errorf("set status: %w", err)
 	}
 	_ = q.repo.AppendEvent(ctx, id, "rejected", "{}")
+	return nil
+}
+
+// loadFindings fetches the diffscan_flagged event payload for a task and
+// returns the parsed findings. Nil on any error or if no findings event exists.
+func loadFindings(ctx context.Context, r *db.Repo, id int64) []diffscan.Finding {
+	events, err := r.ListEvents(ctx, id)
+	if err != nil {
+		return nil
+	}
+	for _, e := range events {
+		if e.Kind == "diffscan_flagged" {
+			var findings []diffscan.Finding
+			if err := json.Unmarshal([]byte(e.Payload), &findings); err == nil {
+				return findings
+			}
+		}
+	}
 	return nil
 }
 
