@@ -9,7 +9,7 @@ log() { echo "==> $*"; }
 log "apt update + install system deps"
 apt-get update -y
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    docker.io docker-buildx make git rsync sqlite3 ufw curl \
+    docker.io docker-buildx make git rsync sqlite3 ufw curl rclone \
     unattended-upgrades apt-listchanges
 
 # --- Go 1.25 from official tarball (Ubuntu 24.04's golang-go is 1.22, too old) ---
@@ -43,6 +43,9 @@ install -d -o era -g era /opt/era /var/backups/era
 # read its own env/pem without sudo while still blocking any other user.
 install -d -o era -g era -m 700 /etc/era
 
+log "install rclone config template"
+install -m 600 -o era -g era /opt/era/deploy/rclone.conf.template /etc/era/rclone.conf.template
+
 log "sudoers entry for era (from deploy/sudoers-era)"
 install -m 440 /opt/era/deploy/sudoers-era /etc/sudoers.d/era
 visudo -c -f /etc/sudoers.d/era >/dev/null || { echo "sudoers validation failed"; exit 1; }
@@ -72,6 +75,7 @@ Next steps (manual, from your Mac):
   2. scp github-app.pem    era@${IP}:/etc/era/github-app.pem
   3. ssh era@${IP} 'chmod 600 /etc/era/env /etc/era/github-app.pem'   # /etc/era is already era:era 700
   4. scp pi-agent.db       era@${IP}:/opt/era/pi-agent.db
+  4a. cp /etc/era/rclone.conf.template /etc/era/rclone.conf  # then fill in real B2 creds
   5. make deploy VPS_HOST=era@${IP}                                   # from the era repo checkout on your Mac
   6. After ssh era@${IP} works: run deploy/disable-root-ssh.sh as root to lock down.
 EOF
