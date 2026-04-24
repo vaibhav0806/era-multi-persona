@@ -15,6 +15,7 @@ func TestAllowlist_StaticHostsAllowed(t *testing.T) {
 	require.True(t, a.allowed("registry.npmjs.org"))
 	require.True(t, a.allowed("pypi.org"))
 	require.True(t, a.allowed("proxy.golang.org"))
+	require.True(t, a.allowed("storage.googleapis.com"))
 	require.True(t, a.allowed("crates.io"))
 	require.True(t, a.allowed("developer.mozilla.org"))
 	require.True(t, a.allowed("docs.python.org"))

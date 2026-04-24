@@ -19,7 +19,7 @@ var staticHosts = []string{
 	// Package registries
 	"registry.npmjs.org", ".npmjs.org",
 	"pypi.org", "files.pythonhosted.org",
-	"proxy.golang.org", "sum.golang.org",
+	"proxy.golang.org", "sum.golang.org", "storage.googleapis.com",
 	"crates.io", "static.crates.io",
 	// Doc hosts (low-noise, high-value)
 	"developer.mozilla.org", "docs.python.org",
