@@ -6,6 +6,20 @@ A personal agent orchestrator that runs tasks via Telegram, executes them in dis
 
 *era* = **e**phemeral **r**untime **a**gent. Every task spawns a fresh disposable Docker container, does its work, and exits; no state lives longer than a single task run. The name also reflects the intent: this is the chapter where the typing gets delegated and the focus shifts to describing and reviewing. M0 lays down the chassis; later milestones swap in a real coding agent, network allowlisting, and approval gates.
 
+## Status: Milestone 5 — polish + safety
+
+M5 sharpens the production era install that shipped in M4 and adds the safety rails around it:
+
+- **CI replaces `make deploy`.** Push to master → GitHub Actions runs `go vet` + `gofmt -l` + `go test -race` + `go build` + a curated subset of `scripts/smoke/phase_*.sh` → on green, ssh's to the VPS, `git pull`, rebuilds, restarts systemd. `make deploy` stays as an emergency manual path.
+- **Offsite backups.** Nightly SQLite dump now also pushes to a private Backblaze B2 bucket with 30-day retention. `/var/backups/era/` keeps 7 days locally for fast restore.
+- **Pre-commit tests.** Runner detects a top-level `Makefile` with a `test` target in the cloned repo and runs `make test` before `git commit`. Failure aborts the push and DMs the test output — no broken code lands in a PR.
+- **PR approval feedback.** Tapping Approve in Telegram now adds an `era-approved` label + posts an "Approved via era" issue comment on the GitHub PR. Tapping Reject posts a comment with the diff-scan findings before closing + deleting the branch. The PR page reflects era's decision.
+- **Runner tooling baked in.** Python, Rust, Go toolchains + common build dependencies (`build-base`, `openssl-dev`, `libffi-dev`, sqlite-dev, utilities like `rg` and `fd`) are now pre-installed in the runner image. Tasks that need `pip install` or `cargo build` no longer hit the egress allowlist trying to reach Alpine's CDN. `storage.googleapis.com` also allowlisted so Go module tarball downloads complete cleanly.
+- **Looser VPS sudoers + NotifyFailed truncation.** era user now has wildcarded `NOPASSWD` for any `systemctl * era` and `journalctl -u era *` — fixes the `--no-pager` friction from M4. Long docker-log failure DMs now truncate under Telegram's 4096-char cap instead of getting silently dropped.
+- **Cleanup.** `internal/githubpr` auth header normalized to `Bearer` (matching siblings); removed dangling env template keys; gitignored stray build artifacts.
+
+Everything from M4 still applies.
+
 ## Status: Milestone 4 — deployment, PRs, mid-run cancel, read-only answers
 
 M4 shipped four things:
@@ -148,4 +162,5 @@ docs/superpowers/plans # implementation plans (M0 and beyond)
 - **M2 — security**: network allowlist per container, secret proxy sidecar, untrusted-content tags, diff-scan reward-hacking guards, GitHub App installation tokens
 - **M3 — approvals + digest**: inline Telegram approval buttons, approval state machine, EOD digest generator
 - **M3.5 — multi-repo**: per-task `target_repo`, `/task <owner>/<repo> <desc>` syntax
-- **M4 — deployment + PRs + cancel + prose** ← you are here: Hetzner VPS via `deploy/install.sh` + `make deploy`, PR-per-task on clean/flagged paths, mid-run `/cancel` via docker kill, Pi's actual text in DMs
+- **M4 — deployment + PRs + cancel + prose**: Hetzner VPS via `deploy/install.sh` + `make deploy`, PR-per-task on clean/flagged paths, mid-run `/cancel` via docker kill, Pi's actual text in DMs
+- **M5 — polish + safety** ← you are here: GitHub Actions CI + auto-deploy, offsite B2 backups, pre-commit test gate, PR approval feedback (label + comment), runner tooling bake (Python/Rust/Go + build deps), wildcarded sudoers, Bearer auth normalization
