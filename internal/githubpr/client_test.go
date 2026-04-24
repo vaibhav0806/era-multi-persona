@@ -107,3 +107,34 @@ func TestClose_PatchesStateClosed(t *testing.T) {
 	err := c.Close(context.Background(), "owner/repo", 42)
 	require.NoError(t, err)
 }
+
+func TestApprovePR_PostsApproveEvent(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "POST", r.Method)
+		require.Equal(t, "/repos/owner/repo/pulls/42/reviews", r.URL.Path)
+		require.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"id":12345,"state":"APPROVED"}`))
+	}))
+	defer srv.Close()
+	c := githubpr.New(srv.URL, &fakeTokens{tok: "ghs_test"})
+
+	err := c.ApprovePR(context.Background(), "owner/repo", 42, "Approved via era")
+	require.NoError(t, err)
+	require.Equal(t, "APPROVE", gotBody["event"])
+	require.Equal(t, "Approved via era", gotBody["body"])
+}
+
+func TestApprovePR_403Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"Resource not accessible by integration"}`, 403)
+	}))
+	defer srv.Close()
+	c := githubpr.New(srv.URL, &fakeTokens{tok: "ghs_test"})
+
+	err := c.ApprovePR(context.Background(), "o/r", 1, "x")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "403")
+}

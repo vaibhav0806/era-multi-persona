@@ -125,6 +125,28 @@ func (c *Client) Close(ctx context.Context, repo string, number int) error {
 	return nil
 }
 
+// ApprovePR submits an APPROVED review on the given PR. Body is optional prose.
+func (c *Client) ApprovePR(ctx context.Context, repo string, number int, body string) error {
+	payload, _ := json.Marshal(map[string]string{
+		"event": "APPROVE",
+		"body":  body,
+	})
+	req, err := c.newReq(ctx, "POST", fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, number), bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("approve pr: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		rb, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("approve pr %s#%d: %d %s", repo, number, resp.StatusCode, string(rb))
+	}
+	return nil
+}
+
 func (c *Client) newReq(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
 	tok, err := c.tokens.InstallationToken(ctx)
 	if err != nil {
