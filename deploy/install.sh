@@ -43,11 +43,9 @@ install -d -o era -g era /opt/era /var/backups/era
 # read its own env/pem without sudo while still blocking any other user.
 install -d -o era -g era -m 700 /etc/era
 
-log "sudoers entry for era (limited to restart/status era)"
-cat > /etc/sudoers.d/era <<'EOF'
-era ALL=(root) NOPASSWD: /usr/bin/systemctl restart era, /usr/bin/systemctl status era, /usr/bin/systemctl start era, /usr/bin/systemctl stop era, /usr/bin/journalctl -u era
-EOF
-chmod 440 /etc/sudoers.d/era
+log "sudoers entry for era (from deploy/sudoers-era)"
+install -m 440 /opt/era/deploy/sudoers-era /etc/sudoers.d/era
+visudo -c -f /etc/sudoers.d/era >/dev/null || { echo "sudoers validation failed"; exit 1; }
 
 log "ufw"
 ufw --force reset
