@@ -1,0 +1,3 @@
+# era user sudo rules — used by M5 install.sh.
+# Wildcards cover all subcommands on the era unit and trailing flags.
+era ALL=(root) NOPASSWD: /usr/bin/systemctl * era, /usr/bin/systemctl * era *, /usr/bin/journalctl -u era, /usr/bin/journalctl -u era *
