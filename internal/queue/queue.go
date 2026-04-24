@@ -295,7 +295,9 @@ func (q *Queue) SetKiller(k ContainerKiller) { q.killer = k }
 func (q *Queue) Running() *RunningSet { return q.running }
 
 // ApproveTask transitions needs_review → approved. No-op on already-approved.
-// Errors on any other current status.
+// Errors on any other current status. If a PR number is set and a PRCreator is
+// configured, it labels the PR "era-approved" and submits an APPROVED review;
+// failures are logged as events but do not block the state transition.
 func (q *Queue) ApproveTask(ctx context.Context, id int64) error {
 	task, err := q.repo.GetTask(ctx, id)
 	if err != nil {
@@ -305,14 +307,35 @@ func (q *Queue) ApproveTask(ctx context.Context, id int64) error {
 	case "approved":
 		return nil // idempotent
 	case "needs_review":
-		if err := q.repo.SetStatus(ctx, id, "approved"); err != nil {
-			return fmt.Errorf("set status: %w", err)
-		}
-		_ = q.repo.AppendEvent(ctx, id, "approved", "{}")
-		return nil
+		// fall through
 	default:
 		return fmt.Errorf("cannot approve task in state %q", task.Status)
 	}
+
+	effectiveRepo := task.TargetRepo
+	if effectiveRepo == "" {
+		effectiveRepo = q.repoFQN
+	}
+
+	if task.PrNumber.Valid && q.prCreator != nil {
+		n := int(task.PrNumber.Int64)
+		if err := q.prCreator.AddLabel(ctx, effectiveRepo, n, "era-approved"); err != nil {
+			_ = q.repo.AppendEvent(ctx, id, "pr_label_error", quoteJSON(err.Error()))
+		} else {
+			_ = q.repo.AppendEvent(ctx, id, "pr_labeled", "{}")
+		}
+		if err := q.prCreator.ApprovePR(ctx, effectiveRepo, n, "Approved via era Telegram bot."); err != nil {
+			_ = q.repo.AppendEvent(ctx, id, "pr_review_error", quoteJSON(err.Error()))
+		} else {
+			_ = q.repo.AppendEvent(ctx, id, "pr_reviewed_approved", "{}")
+		}
+	}
+
+	if err := q.repo.SetStatus(ctx, id, "approved"); err != nil {
+		return fmt.Errorf("set status: %w", err)
+	}
+	_ = q.repo.AppendEvent(ctx, id, "approved", "{}")
+	return nil
 }
 
 // RejectTask transitions needs_review → rejected, closes the PR, and deletes
