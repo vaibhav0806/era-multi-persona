@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestApproveTask_LabelsAndReviewsPR(t *testing.T) {
+func TestApproveTask_LabelsAndCommentsPR(t *testing.T) {
 	ctx := context.Background()
 	q, repo := newRunQueue(t, &fakeRunner{})
 	pc := &fakePRCreator{}
@@ -27,10 +27,10 @@ func TestApproveTask_LabelsAndReviewsPR(t *testing.T) {
 	require.Equal(t, 7, pc.labeled[0].Number)
 	require.Equal(t, "era-approved", pc.labeled[0].Label)
 
-	require.Len(t, pc.approved, 1)
-	require.Equal(t, "owner/repo", pc.approved[0].Repo)
-	require.Equal(t, 7, pc.approved[0].Number)
-	require.Contains(t, pc.approved[0].Body, "Approved via era")
+	require.Len(t, pc.commented, 1)
+	require.Equal(t, "owner/repo", pc.commented[0].Repo)
+	require.Equal(t, 7, pc.commented[0].Number)
+	require.Contains(t, pc.commented[0].Body, "Approved via era")
 
 	// Task status flips.
 	got, _ := repo.GetTask(ctx, task.ID)
@@ -51,7 +51,7 @@ func TestApproveTask_NullPRNumber_SkipsGH(t *testing.T) {
 	require.NoError(t, q.ApproveTask(ctx, task.ID))
 
 	require.Len(t, pc.labeled, 0, "must not call GH when pr_number null")
-	require.Len(t, pc.approved, 0)
+	require.Len(t, pc.commented, 0)
 
 	got, _ := repo.GetTask(ctx, task.ID)
 	require.Equal(t, "approved", got.Status)

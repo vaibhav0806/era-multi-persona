@@ -324,10 +324,10 @@ func (q *Queue) ApproveTask(ctx context.Context, id int64) error {
 		} else {
 			_ = q.repo.AppendEvent(ctx, id, "pr_labeled", "{}")
 		}
-		if err := q.prCreator.ApprovePR(ctx, effectiveRepo, n, "Approved via era Telegram bot."); err != nil {
-			_ = q.repo.AppendEvent(ctx, id, "pr_review_error", quoteJSON(err.Error()))
+		if err := q.prCreator.AddComment(ctx, effectiveRepo, n, "✓ Approved via era Telegram bot. Branch safe to merge."); err != nil {
+			_ = q.repo.AppendEvent(ctx, id, "pr_comment_error", quoteJSON(err.Error()))
 		} else {
-			_ = q.repo.AppendEvent(ctx, id, "pr_reviewed_approved", "{}")
+			_ = q.repo.AppendEvent(ctx, id, "pr_commented_approved", "{}")
 		}
 	}
 
