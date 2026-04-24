@@ -1,0 +1,8 @@
+# era B2 rclone config template. Copy to /etc/era/rclone.conf on the VPS,
+# then replace YOUR_B2_ACCOUNT_ID + YOUR_B2_APPLICATION_KEY with real creds
+# from https://secure.backblaze.com/app_keys.htm.
+
+[b2]
+type = b2
+account = YOUR_B2_ACCOUNT_ID
+key = YOUR_B2_APPLICATION_KEY
