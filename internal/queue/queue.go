@@ -39,14 +39,14 @@ type Runner interface {
 // NeedsReviewArgs bundles the approval-DM payload. Lives in queue so tests
 // can assert shape without importing telegram or diffscan types up there.
 type NeedsReviewArgs struct {
-	TaskID     int64
-	Branch     string
-	Summary    string
-	Tokens     int64
-	CostCents  int
-	Findings   []diffscan.Finding
-	Diffs      []diffscan.FileDiff
-	PRURL string // was CompareURL; now PR html_url (or branch URL fallback when PR creation fails)
+	TaskID    int64
+	Branch    string
+	Summary   string
+	Tokens    int64
+	CostCents int
+	Findings  []diffscan.Finding
+	Diffs     []diffscan.FileDiff
+	PRURL     string // was CompareURL; now PR html_url (or branch URL fallback when PR creation fails)
 }
 
 // Notifier is called by RunNext when a task finishes. All methods are
@@ -81,11 +81,11 @@ type Queue struct {
 	repo          *db.Repo
 	runner        Runner
 	notifier      Notifier
-	tokens        TokenSource   // may be nil
-	compare       DiffSource    // may be nil
-	repoFQN       string        // owner/repo for compare lookups
-	branchDeleter BranchDeleter // may be nil
-	prCreator     PRCreator     // may be nil
+	tokens        TokenSource     // may be nil
+	compare       DiffSource      // may be nil
+	repoFQN       string          // owner/repo for compare lookups
+	branchDeleter BranchDeleter   // may be nil
+	prCreator     PRCreator       // may be nil
 	killer        ContainerKiller // may be nil
 	running       *RunningSet     // initialized in New
 }
