@@ -197,7 +197,7 @@ func (n *tgNotifier) NotifyCompleted(ctx context.Context, id int64, repo, branch
 }
 
 func (n *tgNotifier) NotifyFailed(ctx context.Context, id int64, reason string) {
-	msg := fmt.Sprintf("task #%d failed: %s", id, scrubSecrets(reason))
+	msg := fmt.Sprintf("task #%d failed: %s", id, truncateForTelegram(scrubSecrets(reason), 3500))
 	if err := n.client.SendMessage(ctx, n.chatID, msg); err != nil {
 		slog.Error("notify failed", "err", err, "task", id)
 	}
