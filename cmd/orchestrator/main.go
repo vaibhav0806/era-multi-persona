@@ -224,6 +224,9 @@ func (n *tgNotifier) NotifyCancelled(ctx context.Context, id int64) {
 }
 
 func (n *tgNotifier) NotifyProgress(ctx context.Context, id int64, ev queue.ProgressEvent) {
+	if ev.Action == "" {
+		return
+	}
 	body := fmt.Sprintf("task #%d · iter %d · %s · $%.3f",
 		id, ev.Iter, ev.Action, float64(ev.CostCents)/100.0)
 	if existing, ok := n.progressMsgs.Load(id); ok {
