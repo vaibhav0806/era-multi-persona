@@ -68,7 +68,7 @@ func TestE2E_QueueToDockerToBranch(t *testing.T) {
 	tokens := githubAppTokenSource(t)
 	q := queue.New(r, runner.QueueAdapter{D: d}, tokens, nil, "")
 
-	id, err := q.CreateTask(ctx, "add a file SMOKE_TEST.md with the single line 'smoke ok'", "")
+	id, err := q.CreateTask(ctx, "add a file SMOKE_TEST.md with the single line 'smoke ok'", "", "default")
 	require.NoError(t, err)
 
 	ran, err := q.RunNext(ctx)

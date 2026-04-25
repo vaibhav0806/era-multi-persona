@@ -16,7 +16,7 @@ func TestQueue_RejectTask_ClosesPRBeforeDeletingBranch(t *testing.T) {
 	q.SetPRCreator(pc)
 	q.SetBranchDeleter(bd)
 
-	task, _ := repo.CreateTask(ctx, "x", "owner/repo")
+	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default")
 	_ = repo.CompleteTask(ctx, task.ID, "agent/5/b", "s", 0, 0)
 	_ = repo.SetPRNumber(ctx, task.ID, 5)
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")
@@ -38,7 +38,7 @@ func TestQueue_RejectTask_NullPRNumber_SkipsClose(t *testing.T) {
 	q.SetPRCreator(pc)
 	q.SetBranchDeleter(bd)
 
-	task, _ := repo.CreateTask(ctx, "x", "owner/repo")
+	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default")
 	_ = repo.CompleteTask(ctx, task.ID, "agent/5/b", "s", 0, 0)
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")
 
@@ -56,7 +56,7 @@ func TestQueue_RejectTask_PRCloseFails_DoesNotBlockBranchDelete(t *testing.T) {
 	q.SetPRCreator(pc)
 	q.SetBranchDeleter(bd)
 
-	task, _ := repo.CreateTask(ctx, "x", "owner/repo")
+	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default")
 	_ = repo.CompleteTask(ctx, task.ID, "agent/5/b", "s", 0, 0)
 	_ = repo.SetPRNumber(ctx, task.ID, 5)
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")
@@ -73,7 +73,7 @@ func TestRejectTask_PostsCommentBeforeClose(t *testing.T) {
 	q.SetPRCreator(pc)
 	q.SetBranchDeleter(bd)
 
-	task, _ := repo.CreateTask(ctx, "x", "owner/repo")
+	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default")
 	_ = repo.CompleteTask(ctx, task.ID, "agent/5/b", "s", 0, 0)
 	_ = repo.SetPRNumber(ctx, task.ID, 5)
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")
@@ -100,7 +100,7 @@ func TestRejectTask_CommentErrorDoesNotBlockClose(t *testing.T) {
 	q.SetPRCreator(pc)
 	q.SetBranchDeleter(bd)
 
-	task, _ := repo.CreateTask(ctx, "x", "owner/repo")
+	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default")
 	_ = repo.CompleteTask(ctx, task.ID, "agent/5/b", "s", 0, 0)
 	_ = repo.SetPRNumber(ctx, task.ID, 5)
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")

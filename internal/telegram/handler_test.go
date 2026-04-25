@@ -13,6 +13,7 @@ import (
 type stubOps struct {
 	Created         []string
 	LastCreatedRepo string
+	LastProfile     string
 	Status          map[int64]string
 	Listed          bool
 
@@ -27,9 +28,10 @@ type stubOps struct {
 	RetryErr         error
 }
 
-func (s *stubOps) CreateTask(ctx context.Context, desc, targetRepo string) (int64, error) {
+func (s *stubOps) CreateTask(ctx context.Context, desc, targetRepo, profile string) (int64, error) {
 	s.Created = append(s.Created, desc)
 	s.LastCreatedRepo = targetRepo
+	s.LastProfile = profile
 	return int64(len(s.Created)), nil
 }
 func (s *stubOps) TaskStatus(ctx context.Context, id int64) (string, error) {

@@ -56,19 +56,20 @@ func (q *Queries) ClaimNextQueuedTask(ctx context.Context) (Task, error) {
 
 const createTask = `-- name: CreateTask :one
 
-INSERT INTO tasks (description, status, target_repo)
-VALUES (?, 'queued', ?)
+INSERT INTO tasks (description, status, target_repo, budget_profile)
+VALUES (?, 'queued', ?, ?)
 RETURNING id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile
 `
 
 type CreateTaskParams struct {
-	Description string `json:"description"`
-	TargetRepo  string `json:"target_repo"`
+	Description   string `json:"description"`
+	TargetRepo    string `json:"target_repo"`
+	BudgetProfile string `json:"budget_profile"`
 }
 
 // queries/tasks.sql
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
-	row := q.db.QueryRowContext(ctx, createTask, arg.Description, arg.TargetRepo)
+	row := q.db.QueryRowContext(ctx, createTask, arg.Description, arg.TargetRepo, arg.BudgetProfile)
 	var i Task
 	err := row.Scan(
 		&i.ID,

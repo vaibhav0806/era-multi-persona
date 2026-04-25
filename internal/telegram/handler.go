@@ -9,6 +9,29 @@ import (
 	"strings"
 )
 
+// knownBudgetProfiles is a local copy of the valid profile names to avoid
+// importing internal/queue (which already imports internal/telegram).
+var knownBudgetProfiles = map[string]bool{"quick": true, "default": true, "deep": true}
+
+// parseBudgetFlag strips a leading `--budget=NAME` token from body.
+// Returns (profileName, cleanedBody). Unknown profile names fall back to
+// "default" with the body preserved as-is.
+func parseBudgetFlag(body string) (string, string) {
+	body = strings.TrimSpace(body)
+	if !strings.HasPrefix(body, "--budget=") {
+		return "default", body
+	}
+	end := strings.IndexByte(body, ' ')
+	if end < 0 {
+		return "default", body
+	}
+	name := strings.TrimPrefix(body[:end], "--budget=")
+	if !knownBudgetProfiles[name] {
+		return "default", body
+	}
+	return name, strings.TrimSpace(body[end+1:])
+}
+
 // repoFmtRE matches owner/repo, allowing word chars, dots, dashes.
 // Examples it matches: vaibhav0806/era, alice/foo-bar, x/y.z
 // Examples it doesn't: just-text, /no-leading-slash, foo
@@ -46,7 +69,7 @@ type TaskSummary struct {
 // narrow so we can stub it in tests. Implemented by internal/queue.Queue in
 // Task 10.
 type Ops interface {
-	CreateTask(ctx context.Context, desc, targetRepo string) (int64, error)
+	CreateTask(ctx context.Context, desc, targetRepo, profile string) (int64, error)
 	TaskStatus(ctx context.Context, id int64) (string, error)
 	ListRecent(ctx context.Context, limit int) ([]TaskSummary, error)
 	HandleApproval(ctx context.Context, data string) (replyText string, err error)
@@ -71,20 +94,24 @@ func (h *Handler) Handle(ctx context.Context, u Update) error {
 
 	text := strings.TrimSpace(u.Text)
 	switch {
-	case strings.HasPrefix(text, "/task "):
-		arg := strings.TrimSpace(strings.TrimPrefix(text, "/task "))
-		repo, desc := parseTaskArgs(arg)
-		if desc == "" {
-			return h.client.SendMessage(ctx, u.ChatID, "usage: /task [owner/repo] <description>")
+	case strings.HasPrefix(text, "/task"):
+		body := strings.TrimSpace(strings.TrimPrefix(text, "/task"))
+		if body == "" {
+			return h.client.SendMessage(ctx, u.ChatID, "usage: /task [--budget=quick|default|deep] [owner/repo] <description>")
 		}
-		id, err := h.ops.CreateTask(ctx, desc, repo)
+		profile, body := parseBudgetFlag(body)
+		repo, desc := parseTaskArgs(body)
+		if desc == "" {
+			return h.client.SendMessage(ctx, u.ChatID, "usage: /task [--budget=quick|default|deep] [owner/repo] <description>")
+		}
+		id, err := h.ops.CreateTask(ctx, desc, repo, profile)
 		if err != nil {
 			return h.client.SendMessage(ctx, u.ChatID, fmt.Sprintf("error: %v", err))
 		}
 		if repo != "" {
-			return h.client.SendMessage(ctx, u.ChatID, fmt.Sprintf("task #%d queued (repo: %s)", id, repo))
+			return h.client.SendMessage(ctx, u.ChatID, fmt.Sprintf("task #%d queued (repo: %s, profile: %s)", id, repo, profile))
 		}
-		return h.client.SendMessage(ctx, u.ChatID, fmt.Sprintf("task #%d queued", id))
+		return h.client.SendMessage(ctx, u.ChatID, fmt.Sprintf("task #%d queued (profile: %s)", id, profile))
 
 	case strings.HasPrefix(text, "/status "):
 		raw := strings.TrimSpace(strings.TrimPrefix(text, "/status "))

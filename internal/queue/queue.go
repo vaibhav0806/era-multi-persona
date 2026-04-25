@@ -105,8 +105,11 @@ func New(repo *db.Repo, runner Runner, tokens TokenSource, compare DiffSource, r
 // startup; do not change mid-flight — RunNext reads the field without a lock.
 func (q *Queue) SetNotifier(n Notifier) { q.notifier = n }
 
-func (q *Queue) CreateTask(ctx context.Context, desc, targetRepo string) (int64, error) {
-	t, err := q.repo.CreateTask(ctx, desc, targetRepo)
+func (q *Queue) CreateTask(ctx context.Context, desc, targetRepo, profile string) (int64, error) {
+	if profile == "" {
+		profile = "default"
+	}
+	t, err := q.repo.CreateTask(ctx, desc, targetRepo, profile)
 	if err != nil {
 		return 0, err
 	}
@@ -486,7 +489,7 @@ func (q *Queue) RetryTask(ctx context.Context, id int64) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("get original task: %w", err)
 	}
-	newTask, err := q.repo.CreateTask(ctx, orig.Description, "")
+	newTask, err := q.repo.CreateTask(ctx, orig.Description, orig.TargetRepo, orig.BudgetProfile)
 	if err != nil {
 		return 0, fmt.Errorf("create retry task: %w", err)
 	}

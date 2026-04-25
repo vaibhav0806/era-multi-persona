@@ -18,10 +18,11 @@ func NewRepo(h *Handle) *Repo {
 	return &Repo{q: New(h.Raw())}
 }
 
-func (r *Repo) CreateTask(ctx context.Context, desc, targetRepo string) (Task, error) {
+func (r *Repo) CreateTask(ctx context.Context, desc, targetRepo, profile string) (Task, error) {
 	return r.q.CreateTask(ctx, CreateTaskParams{
-		Description: desc,
-		TargetRepo:  targetRepo,
+		Description:   desc,
+		TargetRepo:    targetRepo,
+		BudgetProfile: profile,
 	})
 }
 
