@@ -54,3 +54,6 @@ SELECT id FROM tasks WHERE status='running';
 UPDATE tasks
    SET status='failed', error=?, finished_at=CURRENT_TIMESTAMP
  WHERE status='running';
+
+-- name: SetBudgetProfile :exec
+UPDATE tasks SET budget_profile = ? WHERE id = ?;

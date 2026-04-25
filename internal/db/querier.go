@@ -22,6 +22,7 @@ type Querier interface {
 	MarkRunningTasksFailed(ctx context.Context, error sql.NullString) (int64, error)
 	MarkTaskCompleted(ctx context.Context, arg MarkTaskCompletedParams) error
 	MarkTaskFailed(ctx context.Context, arg MarkTaskFailedParams) error
+	SetBudgetProfile(ctx context.Context, arg SetBudgetProfileParams) error
 	SetPRNumber(ctx context.Context, arg SetPRNumberParams) error
 	SetTaskStatus(ctx context.Context, arg SetTaskStatusParams) error
 }

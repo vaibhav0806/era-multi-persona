@@ -91,3 +91,10 @@ func (r *Repo) ListRunningTaskIDs(ctx context.Context) ([]int64, error) {
 func (r *Repo) MarkRunningTasksFailed(ctx context.Context, reason string) (int64, error) {
 	return r.q.MarkRunningTasksFailed(ctx, sql.NullString{String: reason, Valid: true})
 }
+
+func (r *Repo) SetBudgetProfile(ctx context.Context, id int64, profile string) error {
+	return r.q.SetBudgetProfile(ctx, SetBudgetProfileParams{
+		BudgetProfile: profile,
+		ID:            id,
+	})
+}
