@@ -104,27 +104,14 @@ ALTER TABLE tasks ADD COLUMN budget_profile TEXT NOT NULL DEFAULT 'default';
 SELECT 1;
 ```
 
-- [ ] **Step 2: Add sqlc queries.**
+- [ ] **Step 2: Add additive sqlc query.**
 
-Append to `queries/tasks.sql`:
+Append to `queries/tasks.sql` (do NOT modify the existing `CreateTask` query in this task — it expands in AG-3 atomically with all 4-arg call-site updates, keeping the tree green):
 
 ```sql
 -- name: SetBudgetProfile :exec
 UPDATE tasks SET budget_profile = ? WHERE id = ?;
 ```
-
-Also modify the existing `CreateTask` query — the simplest path: leave CreateTask alone (default value handles new tasks), and use `SetBudgetProfile` to override. Profile default of `'default'` from the migration is the happy path.
-
-Actually cleaner: extend `CreateTask` to accept profile too, since AG-3 changes `Queue.CreateTask` signature. Update the existing query:
-
-```sql
--- name: CreateTask :one
-INSERT INTO tasks (description, status, target_repo, budget_profile)
-VALUES (?, 'queued', ?, ?)
-RETURNING *;
-```
-
-Old callers passed 2 args (desc, target_repo). New takes 3. Cascades through repo wrapper.
 
 - [ ] **Step 3: Regenerate sqlc.**
 
@@ -132,21 +119,13 @@ Old callers passed 2 args (desc, target_repo). New takes 3. Cascades through rep
 sqlc generate
 ```
 
-Confirm `internal/db/tasks.sql.go` has updated `CreateTaskParams` (now includes `BudgetProfile string`) and new `SetBudgetProfile` method on Queries. `Task` struct in `models.go` has `BudgetProfile string`.
+Confirm `internal/db/tasks.sql.go` has the new `SetBudgetProfile` method on Queries. `Task` struct in `models.go` now has `BudgetProfile string` (added by the migration's column even though the existing CreateTask query doesn't return it yet — sqlc reads the schema).
 
-- [ ] **Step 4: Update repo wrapper.**
+- [ ] **Step 4: Add additive repo wrapper.**
 
-In `internal/db/repo.go`, locate the existing `CreateTask` wrapper. Update signature:
+In `internal/db/repo.go`:
 
 ```go
-func (r *Repo) CreateTask(ctx context.Context, desc, targetRepo, profile string) (Task, error) {
-    return r.q.CreateTask(ctx, CreateTaskParams{
-        Description:   desc,
-        TargetRepo:    targetRepo,
-        BudgetProfile: profile,
-    })
-}
-
 func (r *Repo) SetBudgetProfile(ctx context.Context, id int64, profile string) error {
     return r.q.SetBudgetProfile(ctx, SetBudgetProfileParams{
         BudgetProfile: profile,
@@ -155,23 +134,22 @@ func (r *Repo) SetBudgetProfile(ctx context.Context, id int64, profile string) e
 }
 ```
 
-- [ ] **Step 5: Verify compiles.**
+Do NOT touch the existing `CreateTask` wrapper here — that signature change happens in AG-3.
+
+- [ ] **Step 5: Verify build + tests stay green.**
 
 ```
 go build ./...
+go test -race -count=1 ./...
 ```
 
-Expected: errors at every existing `repo.CreateTask(ctx, desc, target)` 2-arg call site. We'll fix them in AG-3. For now, check the regenerated code is syntactically correct:
-
-```
-go vet ./internal/db/...
-```
+Expected: green. Migration is additive (DEFAULT 'default' on the new column), and the only Go changes are additive (new method on Queries + new wrapper).
 
 - [ ] **Step 6: Commit.**
 
 ```bash
 git add migrations/0007_budget_profile.sql queries/tasks.sql internal/db/
-git commit -m "feat(db): migration 0007 tasks.budget_profile + extend CreateTask + SetBudgetProfile"
+git commit -m "feat(db): migration 0007 tasks.budget_profile + SetBudgetProfile"
 ```
 
 ## Task AG-2: `internal/queue/budget.go` Profile + ParseBudgetFlag
@@ -311,24 +289,62 @@ git add internal/queue/budget.go internal/queue/budget_test.go
 git commit -m "feat(queue): Profile + ParseBudgetFlag for --budget=NAME parsing"
 ```
 
-## Task AG-3: Update `Queue.CreateTask` signature + cascade
+## Task AG-3: Expand `CreateTask` query + cascade signature change everywhere
 
 **Files:**
+- Modify: `queries/tasks.sql` (CreateTask query)
+- Regenerate: `internal/db/tasks.sql.go` via sqlc
+- Modify: `internal/db/repo.go` (CreateTask wrapper)
 - Modify: `internal/queue/queue.go` (CreateTask + RetryTask)
 - Modify: `internal/telegram/handler.go` (Ops interface + /task path)
 - Modify: `internal/telegram/handler_test.go` (stubOps signature)
 - Modify: `internal/queue/queue_test.go` + `queue_run_test.go` if they call CreateTask
 - Modify: any other callers (grep)
 
-- [ ] **Step 1: Find all callers.**
+This task is a single atomic change: extend the SQL → sqlc → wrapper → queue → handler → tests in one commit so the tree stays green.
+
+- [ ] **Step 1: Find all callers (use to size the cascade).**
 
 ```
 grep -rn "\.CreateTask(" --include="*.go" .
 ```
 
-Expected callers: handler.go (`h.ops.CreateTask`), queue.go (`q.repo.CreateTask` from inside `Queue.CreateTask` and `RetryTask`), and tests.
+Expected: handler.go (`h.ops.CreateTask`), queue.go (`q.repo.CreateTask` from inside `Queue.CreateTask` and `RetryTask`), and tests in `internal/queue/queue*_test.go` + `internal/telegram/handler_test.go`.
 
-- [ ] **Step 2: Update Queue.CreateTask.**
+- [ ] **Step 2: Expand CreateTask query.**
+
+In `queries/tasks.sql`, modify the existing `CreateTask` query:
+
+```sql
+-- name: CreateTask :one
+INSERT INTO tasks (description, status, target_repo, budget_profile)
+VALUES (?, 'queued', ?, ?)
+RETURNING *;
+```
+
+Then regenerate:
+
+```
+sqlc generate
+```
+
+`CreateTaskParams` now has `BudgetProfile string`. Build is now broken at every 2-arg `repo.CreateTask` site — this is intentional staging; we fix them all in this task.
+
+- [ ] **Step 3: Update repo wrapper.**
+
+In `internal/db/repo.go`:
+
+```go
+func (r *Repo) CreateTask(ctx context.Context, desc, targetRepo, profile string) (Task, error) {
+    return r.q.CreateTask(ctx, CreateTaskParams{
+        Description:   desc,
+        TargetRepo:    targetRepo,
+        BudgetProfile: profile,
+    })
+}
+```
+
+- [ ] **Step 4: Update Queue.CreateTask.**
 
 Change:
 
@@ -351,7 +367,7 @@ func (q *Queue) CreateTask(ctx context.Context, desc, targetRepo, profile string
 }
 ```
 
-- [ ] **Step 3: Update Ops interface in handler.go.**
+- [ ] **Step 5: Update Ops interface in handler.go.**
 
 ```go
 type Ops interface {
@@ -393,7 +409,7 @@ repo, desc := parseTaskArgs(body)
 
 Order matters. Update accordingly.
 
-- [ ] **Step 4: Update Queue.RetryTask to inherit profile + target_repo.**
+- [ ] **Step 6: Update Queue.RetryTask to inherit profile + target_repo.**
 
 Locate `RetryTask` (~line 484):
 
@@ -414,7 +430,7 @@ newTask, err := q.repo.CreateTask(ctx, orig.Description, orig.TargetRepo, orig.B
 
 Both fields now exist on Task.
 
-- [ ] **Step 5: Update test stubs.**
+- [ ] **Step 7: Update test stubs.**
 
 In `internal/telegram/handler_test.go`, `stubOps.CreateTask` signature:
 
@@ -431,23 +447,23 @@ Add `lastProfile string` field.
 
 In `internal/queue/queue_test.go` and `queue_run_test.go`, every `q.CreateTask(ctx, ...)` becomes `q.CreateTask(ctx, ..., "default")`. Use `"default"` as the third arg unless the test specifically wants another profile.
 
-- [ ] **Step 6: Verify build + tests.**
+- [ ] **Step 8: Verify build + tests green.**
 
 ```
 go build ./...
 go test -race -count=1 ./...
 ```
 
-If there are compile errors, fix the call sites. Common ones: `queue.New(...)` test helpers that internally seed tasks via `repo.CreateTask` — bump those to 4-arg too.
+Tree must be green before commit. If there are compile errors, fix the call sites. Common ones: `queue.New(...)` test helpers that internally seed tasks via `repo.CreateTask` — bump those to 4-arg too.
 
-- [ ] **Step 7: Commit.**
+- [ ] **Step 9: Commit.**
 
 ```bash
-git add internal/queue/queue.go internal/telegram/handler.go internal/telegram/handler_test.go internal/queue/queue_test.go internal/queue/queue_run_test.go internal/queue/queue_pr_test.go internal/queue/queue_reject_test.go internal/queue/queue_approve_test.go internal/queue/queue_cancel_test.go
-git commit -m "feat(queue): CreateTask + RetryTask carry budget_profile; handler parses --budget flag"
+git status   # confirm exactly which files changed
+git add queries/tasks.sql internal/db/ internal/queue/ internal/telegram/handler.go internal/telegram/handler_test.go
+# Add anything else `git status` surfaces (test files vary by what currently exists)
+git commit -m "feat(queue): CreateTask query + cascade carry budget_profile; handler parses --budget flag"
 ```
-
-(The `git add` list is broad — if you find more files via `git status` after the build fix, add them too.)
 
 ## Task AG-4: Runner per-task cap overrides
 
@@ -726,6 +742,24 @@ chmod +x scripts/smoke/phase_ag_caps.sh
 bash scripts/smoke/phase_ag_caps.sh
 ```
 
+- [ ] **Step 3b: Full regression sweep before push.**
+
+```
+go test -race -count=1 ./...
+for f in scripts/smoke/phase_*.sh; do
+    case "$f" in
+        # Skip docker- and binary-needing smokes (CI skip set; matches .github/workflows/ci.yml)
+        *phase_ab_tooling.sh|*phase_h_docker.sh|*phase_i_e2e.sh|*phase_j_sidecar.sh|*phase_k_netlock.sh|*phase_l_search.sh|*phase_m_secrets.sh) continue ;;
+        *phase_b_db.sh|*phase_f_schema.sh|*phase_p_diffscan.sh) continue ;;
+        *phase_o_githubapp.sh) continue ;;
+    esac
+    echo "--- $f ---"
+    bash "$f" || { echo "REGRESSION: $f failed"; exit 1; }
+done
+```
+
+Expected: every prior phase smoke still green.
+
 - [ ] **Step 4: Push to master (CI auto-deploys).**
 
 ```
@@ -916,6 +950,8 @@ git add scripts/smoke/phase_ah_allowlist.sh
 git commit -m "docs(smoke): phase AH egress allowlist"
 ```
 
+- [ ] **Step 2b: Full regression sweep.** (Same loop as AG-6 step 3b — runs `go test ./...` + every prior phase smoke from the CI-compatible set. Copy that block here.)
+
 - [ ] **Step 3: Push to master (CI deploys).**
 
 ```
@@ -1053,6 +1089,8 @@ type Client interface {
 }
 ```
 
+**Footgun warning:** `SendMessage` returns `int64` (matches DB `completion_message_id INTEGER`); `SendMessageWithButtons` and `EditMessageText` keep `int` (pre-existing API, callers don't store these). When AJ-6 wires progress DMs, you'll cast: `progressMsgID, _ := SendMessageWithButtons(...)` returns `int`; cache that `int` in `progressMsgs sync.Map[int64]int`; pass back to `EditMessageText(..., int)` directly. Do NOT convert to/from `int64` for progress message IDs — only the completion message ID needs `int64` (because we persist it).
+
 - [ ] **Step 3: Update realClient impl.**
 
 ```go
@@ -1156,15 +1194,15 @@ The struct (currently around line 174) has `client, chatID, repo string`. Constr
 
 ```go
 type tgNotifier struct {
-    client       telegram.Client
-    chatID       int64
-    sandboxRepo  string                  // renamed from `repo`
-    repo         *db.Repo                // new: for SetCompletionMessageID
-    progressMsgs sync.Map                // added later in AJ; declare here so Notify methods can use
+    client      telegram.Client
+    chatID      int64
+    sandboxRepo string   // renamed from `repo`
+    repo        *db.Repo // new: for SetCompletionMessageID
+    // progressMsgs sync.Map added in AJ-6 alongside the progress-DM transport
 }
 ```
 
-Add `"sync"` and `"github.com/vaibhav0806/era/internal/db"` imports if not present.
+Add `"github.com/vaibhav0806/era/internal/db"` import. (The `"sync"` import comes in AJ-6.)
 
 - [ ] **Step 3: Update construction.**
 
@@ -1553,13 +1591,20 @@ go test -race -count=1 -run 'TestRepo_CompletionMessageID_|TestComposeReplyPromp
 echo "OK: phase AI — reply threading all unit tests green"
 ```
 
-- [ ] **Step 2: Run + commit + push.**
+- [ ] **Step 2: Run + commit.**
 
 ```
 chmod +x scripts/smoke/phase_ai_reply.sh
 bash scripts/smoke/phase_ai_reply.sh
 git add scripts/smoke/phase_ai_reply.sh
 git commit -m "docs(smoke): phase AI reply threading"
+```
+
+- [ ] **Step 2b: Full regression sweep.** (Same loop as AG-6 step 3b — runs `go test ./...` + every prior phase smoke from the CI-compatible set. Copy that block here.)
+
+- [ ] **Step 2c: Push.**
+
+```
 git push origin master
 gh run watch --exit-status
 ```
@@ -2108,13 +2153,20 @@ go test -race -count=1 -run 'TestWriteProgress_|TestRunPi_FiresProgress|TestRunP
 echo "OK: phase AJ — progress DM pipeline all unit tests green"
 ```
 
-- [ ] **Step 2: Commit + push.**
+- [ ] **Step 2: Commit.**
 
 ```
 chmod +x scripts/smoke/phase_aj_progress.sh
 bash scripts/smoke/phase_aj_progress.sh
 git add scripts/smoke/phase_aj_progress.sh
 git commit -m "docs(smoke): phase AJ progress DMs"
+```
+
+- [ ] **Step 2b: Full regression sweep.** (Same loop as AG-6 step 3b — runs `go test ./...` + every prior phase smoke from the CI-compatible set. Copy that block here.)
+
+- [ ] **Step 2c: Push.**
+
+```
 git push origin master
 gh run watch --exit-status
 ```
@@ -2334,13 +2386,11 @@ func TestHandler_AskWithoutRepo_DMsUsage(t *testing.T) {
 
 - [ ] **Step 4: Update help message.**
 
-In the unknown-command fallback, add `/ask`:
+In the unknown-command fallback, add `/ask` only — `/stats` lands in AL and gets added to the help string there. Don't advertise commands that don't exist yet:
 
 ```go
-return h.client.SendMessage(ctx, u.ChatID, "unknown command. try /task, /ask, /status, /list, /cancel, /retry, /stats")
+return h.client.SendMessage(ctx, u.ChatID, "unknown command. try /task, /ask, /status, /list, /cancel, /retry")
 ```
-
-(/stats added in AL — leave for AL or include now; including now is fine since handler.go gets touched again.)
 
 - [ ] **Step 5: Verify + commit.**
 
@@ -2478,13 +2528,20 @@ go test -race -count=1 -run 'TestRepo_CreateAskTask_|TestQueue_CreateAskTask_|Te
 echo "OK: phase AK — /ask read-only all unit tests green"
 ```
 
-- [ ] **Step 2: Commit + push + live gate.**
+- [ ] **Step 2: Commit.**
 
 ```
 chmod +x scripts/smoke/phase_ak_ask.sh
 bash scripts/smoke/phase_ak_ask.sh
 git add scripts/smoke/phase_ak_ask.sh
 git commit -m "docs(smoke): phase AK /ask read-only"
+```
+
+- [ ] **Step 2b: Full regression sweep.** (Same loop as AG-6 step 3b — runs `go test ./...` + every prior phase smoke from the CI-compatible set. Copy that block here.)
+
+- [ ] **Step 2c: Push + live gate.**
+
+```
 git push origin master
 gh run watch --exit-status
 ```
@@ -2519,26 +2576,16 @@ Expected: `<id>|completed|1|quick|` (no branch_name).
 SELECT status, COUNT(*) AS count FROM tasks WHERE created_at >= ? GROUP BY status;
 
 -- name: SumTokensSince :one
-SELECT COALESCE(SUM(tokens_used), 0)::INTEGER AS total FROM tasks WHERE created_at >= ?;
+SELECT COALESCE(SUM(tokens_used), 0) AS total FROM tasks WHERE created_at >= ?;
 
 -- name: SumCostCentsSince :one
-SELECT COALESCE(SUM(cost_cents), 0)::INTEGER AS total FROM tasks WHERE created_at >= ?;
+SELECT COALESCE(SUM(cost_cents), 0) AS total FROM tasks WHERE created_at >= ?;
 
 -- name: CountQueuedTasks :one
 SELECT COUNT(*) AS count FROM tasks WHERE status = 'queued';
 ```
 
-(SQLite doesn't support `::INTEGER` type cast — drop it. `SUM` returns the column type; for INTEGER columns it stays INTEGER. Plain `COALESCE(SUM(...), 0)` is fine.)
-
-Final form:
-
-```sql
--- name: SumTokensSince :one
-SELECT COALESCE(SUM(tokens_used), 0) AS total FROM tasks WHERE created_at >= ?;
-
--- name: SumCostCentsSince :one
-SELECT COALESCE(SUM(cost_cents), 0) AS total FROM tasks WHERE created_at >= ?;
-```
+(SQLite doesn't support PostgreSQL `::INTEGER` casts. `SUM` over an INTEGER column stays INTEGER, so plain `COALESCE(SUM(...), 0)` is enough.)
 
 - [ ] **Step 2: Regenerate.**
 
@@ -2735,7 +2782,7 @@ type Ops interface {
 
 (`stubOps.Stats` returns canned data in tests.)
 
-- [ ] **Step 2: Add /stats route + formatter.**
+- [ ] **Step 2: Add /stats route + formatter + add to help string.**
 
 ```go
 case text == "/stats":
@@ -2746,6 +2793,12 @@ case text == "/stats":
     }
     _, err = h.client.SendMessage(ctx, u.ChatID, formatStatsDM(s))
     return err
+```
+
+Also extend the unknown-command help string (set in AK-3) to include `/stats`:
+
+```go
+return h.client.SendMessage(ctx, u.ChatID, "unknown command. try /task, /ask, /status, /list, /cancel, /retry, /stats")
 ```
 
 Add at the bottom of handler.go (or in a helper file):
@@ -2830,13 +2883,20 @@ go test -race -count=1 -run 'TestStats_|TestPeriodStats_|TestHandler_StatsComman
 echo "OK: phase AL — /stats command all unit tests green"
 ```
 
-- [ ] **Step 2: Commit + push + live gate.**
+- [ ] **Step 2: Commit.**
 
 ```
 chmod +x scripts/smoke/phase_al_stats.sh
 bash scripts/smoke/phase_al_stats.sh
 git add scripts/smoke/phase_al_stats.sh
 git commit -m "docs(smoke): phase AL /stats command"
+```
+
+- [ ] **Step 2b: Full regression sweep.** (Same loop as AG-6 step 3b — runs `go test ./...` + every prior phase smoke from the CI-compatible set. Copy that block here.)
+
+- [ ] **Step 2c: Push + live gate.**
+
+```
 git push origin master
 gh run watch --exit-status
 ```
@@ -2904,16 +2964,22 @@ go test -race -count=1 ./...
 
 All packages green.
 
-- [ ] **Step 2: Run all M6 phase smokes locally.**
+- [ ] **Step 2: Run every CI-compatible phase smoke (M0 → M6) locally.**
 
 ```
-for f in scripts/smoke/phase_a{g,h,i,j,k,l}_*.sh; do
+for f in scripts/smoke/phase_*.sh; do
+    case "$f" in
+        # CI skip set — these need docker / goose binary / built binary; they're verified live separately
+        *phase_ab_tooling.sh|*phase_h_docker.sh|*phase_i_e2e.sh|*phase_j_sidecar.sh|*phase_k_netlock.sh|*phase_l_search.sh|*phase_m_secrets.sh) continue ;;
+        *phase_b_db.sh|*phase_f_schema.sh|*phase_p_diffscan.sh) continue ;;
+        *phase_o_githubapp.sh) continue ;;
+    esac
     echo "--- $f ---"
-    bash "$f"
+    bash "$f" || { echo "REGRESSION: $f failed"; exit 1; }
 done
 ```
 
-Each prints OK.
+Each prints OK. Skipped scripts get exercised in their phase live gates.
 
 - [ ] **Step 3: Tag.**
 
