@@ -1089,7 +1089,13 @@ type Client interface {
 }
 ```
 
-**Footgun warning:** `SendMessage` returns `int64` (matches DB `completion_message_id INTEGER`); `SendMessageWithButtons` and `EditMessageText` keep `int` (pre-existing API, callers don't store these). When AJ-6 wires progress DMs, you'll cast: `progressMsgID, _ := SendMessageWithButtons(...)` returns `int`; cache that `int` in `progressMsgs sync.Map[int64]int`; pass back to `EditMessageText(..., int)` directly. Do NOT convert to/from `int64` for progress message IDs — only the completion message ID needs `int64` (because we persist it).
+**Footgun warning — int vs int64 across the Telegram API:**
+
+- `SendMessage` returns `(int64, error)` — needed because the orchestrator persists completion message IDs into `tasks.completion_message_id INTEGER`.
+- `SendMessageWithButtons` returns `(messageID int, err error)` — pre-existing API, only used for ephemeral inline-button menus that nobody persists.
+- `EditMessageText` takes `messageID int` — pre-existing.
+
+AJ-6 uses `SendMessage` for progress DMs (plain text, no buttons), so it gets back `int64`. It caches that `int64` in `progressMsgs sync.Map[int64]int64` (taskID → messageID), then casts down with `int(msgID)` when calling `EditMessageText`. The cast is safe because Telegram message IDs comfortably fit in `int` (currently ~10 digits, billions away from `int32` overflow). Don't try to widen `EditMessageText` — touching that cascades to every caller for no benefit.
 
 - [ ] **Step 3: Update realClient impl.**
 
@@ -2389,7 +2395,8 @@ func TestHandler_AskWithoutRepo_DMsUsage(t *testing.T) {
 In the unknown-command fallback, add `/ask` only — `/stats` lands in AL and gets added to the help string there. Don't advertise commands that don't exist yet:
 
 ```go
-return h.client.SendMessage(ctx, u.ChatID, "unknown command. try /task, /ask, /status, /list, /cancel, /retry")
+_, err := h.client.SendMessage(ctx, u.ChatID, "unknown command. try /task, /ask, /status, /list, /cancel, /retry")
+return err
 ```
 
 - [ ] **Step 5: Verify + commit.**
@@ -2798,7 +2805,8 @@ case text == "/stats":
 Also extend the unknown-command help string (set in AK-3) to include `/stats`:
 
 ```go
-return h.client.SendMessage(ctx, u.ChatID, "unknown command. try /task, /ask, /status, /list, /cancel, /retry, /stats")
+_, err := h.client.SendMessage(ctx, u.ChatID, "unknown command. try /task, /ask, /status, /list, /cancel, /retry, /stats")
+return err
 ```
 
 Add at the bottom of handler.go (or in a helper file):
