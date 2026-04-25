@@ -1,4 +1,4 @@
-package queue_test
+package replyprompt_test
 
 import (
 	"database/sql"
@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/vaibhav0806/era/internal/db"
-	"github.com/vaibhav0806/era/internal/queue"
+	"github.com/vaibhav0806/era/internal/replyprompt"
 )
 
 func TestComposeReplyPrompt_HappyPath(t *testing.T) {
@@ -18,7 +18,7 @@ func TestComposeReplyPrompt_HappyPath(t *testing.T) {
 		Summary:     sql.NullString{String: "I built it", Valid: true},
 		Status:      "completed",
 	}
-	out := queue.ComposeReplyPrompt(orig, "now add tests")
+	out := replyprompt.ComposeReplyPrompt(orig, "now add tests")
 	require.Contains(t, out, "task #5")
 	require.Contains(t, out, "build a URL shortener")
 	require.Contains(t, out, "agent/5/foo")
@@ -33,7 +33,7 @@ func TestComposeReplyPrompt_NoBranchNoSummary(t *testing.T) {
 		Description: "what is in main.go",
 		Status:      "completed",
 	}
-	out := queue.ComposeReplyPrompt(orig, "tell me more")
+	out := replyprompt.ComposeReplyPrompt(orig, "tell me more")
 	require.Contains(t, out, "task #7")
 	require.Contains(t, out, "tell me more")
 	require.NotContains(t, out, "branch")
@@ -47,7 +47,7 @@ func TestComposeReplyPrompt_FailedTask(t *testing.T) {
 		Status:      "failed",
 		Error:       sql.NullString{String: "exit status 137", Valid: true},
 	}
-	out := queue.ComposeReplyPrompt(orig, "try again with smaller scope")
+	out := replyprompt.ComposeReplyPrompt(orig, "try again with smaller scope")
 	require.Contains(t, out, "failed")
 	require.Contains(t, out, "exit status 137")
 	require.Contains(t, out, "try again")
