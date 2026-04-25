@@ -51,6 +51,27 @@ func TestAllowlist_StaticHostsAllowed_M6Additions(t *testing.T) {
 	require.True(t, a.allowed("services.gradle.org"))
 }
 
+func TestPIEgressExtra_AppendsHosts(t *testing.T) {
+	t.Setenv("PI_EGRESS_EXTRA", "foo.example.com,bar.example.org")
+	a := newAllowlist()
+	require.True(t, a.allowed("foo.example.com"))
+	require.True(t, a.allowed("bar.example.org"))
+}
+
+func TestPIEgressExtra_EmptyWhitespaceSkipped(t *testing.T) {
+	t.Setenv("PI_EGRESS_EXTRA", "foo.example.com, ,  bar.example.org , ")
+	a := newAllowlist()
+	require.True(t, a.allowed("foo.example.com"))
+	require.True(t, a.allowed("bar.example.org"))
+	require.False(t, a.allowed(""))
+}
+
+func TestPIEgressExtra_Unset_NoChange(t *testing.T) {
+	t.Setenv("PI_EGRESS_EXTRA", "")
+	a := newAllowlist()
+	require.False(t, a.allowed("notinlist.example.com"))
+}
+
 func TestAllowlist_DynamicHostAddedAndExpires(t *testing.T) {
 	a := newAllowlist()
 	require.False(t, a.allowed("docs.example.com"))

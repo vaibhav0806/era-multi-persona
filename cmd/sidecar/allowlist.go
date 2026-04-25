@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,20 @@ func newAllowlist() *allowlist {
 			a.staticSuff = append(a.staticSuff, h)
 		} else {
 			a.staticSet[h] = struct{}{}
+		}
+	}
+	// M6 AH: PI_EGRESS_EXTRA appends comma-separated hosts at runtime.
+	if extra := os.Getenv("PI_EGRESS_EXTRA"); extra != "" {
+		for _, h := range strings.Split(extra, ",") {
+			h = strings.TrimSpace(h)
+			if h == "" {
+				continue
+			}
+			if strings.HasPrefix(h, ".") {
+				a.staticSuff = append(a.staticSuff, h)
+			} else {
+				a.staticSet[h] = struct{}{}
+			}
 		}
 	}
 	return a
