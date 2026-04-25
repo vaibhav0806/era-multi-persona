@@ -39,7 +39,7 @@ func TestPi_DrainsEventsAndAggregates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	summary, err := runPi(ctx, f, nopObserver{})
+	summary, err := runPi(ctx, f, nopObserver{}, nil)
 	require.NoError(t, err)
 	require.Equal(t, int64(30), summary.TotalTokens)
 	require.InDelta(t, 0.03, summary.TotalCostUSD, 1e-9)
@@ -60,7 +60,7 @@ func TestRunPi_TracksLastAssistantText(t *testing.T) {
 	}, "\n")
 	p := &fakePi{stdout: strings.NewReader(jsonl)}
 	obs := nopObserver{}
-	s, err := runPi(context.Background(), p, obs)
+	s, err := runPi(context.Background(), p, obs, nil)
 	require.NoError(t, err)
 	require.Equal(t, "final answer wins", s.LastText)
 	require.Equal(t, int64(30), s.TotalTokens)
@@ -72,9 +72,43 @@ func TestRunPi_LastTextEmptyWhenNoAssistantMessage(t *testing.T) {
 		`{"type":"agent_end"}`,
 	}, "\n")
 	p := &fakePi{stdout: strings.NewReader(jsonl)}
-	s, err := runPi(context.Background(), p, nopObserver{})
+	s, err := runPi(context.Background(), p, nopObserver{}, nil)
 	require.NoError(t, err)
 	require.Equal(t, "", s.LastText)
+}
+
+func TestRunPi_FiresProgressOnToolExecution(t *testing.T) {
+	jsonl := strings.Join([]string{
+		`{"type":"tool_execution_end","tool":"read"}`,
+		`{"type":"tool_execution_end","tool":"write"}`,
+		`{"type":"agent_end"}`,
+	}, "\n")
+	p := &fakePi{stdout: strings.NewReader(jsonl)}
+
+	var got []struct {
+		iter   int
+		action string
+	}
+	onProgress := func(iter int, action string, tokens int64, cost float64) {
+		got = append(got, struct {
+			iter   int
+			action string
+		}{iter, action})
+	}
+	_, err := runPi(context.Background(), p, nopObserver{}, onProgress)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.Equal(t, 1, got[0].iter)
+	require.Equal(t, "read", got[0].action)
+	require.Equal(t, 2, got[1].iter)
+	require.Equal(t, "write", got[1].action)
+}
+
+func TestRunPi_NilProgressIsSafe(t *testing.T) {
+	jsonl := `{"type":"tool_execution_end","tool":"x"}` + "\n" + `{"type":"agent_end"}`
+	p := &fakePi{stdout: strings.NewReader(jsonl)}
+	_, err := runPi(context.Background(), p, nopObserver{}, nil)
+	require.NoError(t, err)
 }
 
 // TestNewRealPi_Flags checks that newRealPi builds the right exec.Cmd:

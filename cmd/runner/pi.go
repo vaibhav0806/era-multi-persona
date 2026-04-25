@@ -34,7 +34,9 @@ type eventObserver interface {
 	onEvent(e *piEvent) error
 }
 
-func runPi(ctx context.Context, p piProcess, obs eventObserver) (*runSummary, error) {
+type progressFunc func(iter int, action string, tokens int64, costUSD float64)
+
+func runPi(ctx context.Context, p piProcess, obs eventObserver, onProgress progressFunc) (*runSummary, error) {
 	stdout, err := p.Stdout()
 	if err != nil {
 		return nil, fmt.Errorf("stdout: %w", err)
@@ -91,6 +93,9 @@ func runPi(ctx context.Context, p piProcess, obs eventObserver) (*runSummary, er
 			}
 		case "tool_execution_end":
 			summary.ToolUseCount++
+			if onProgress != nil {
+				onProgress(summary.ToolUseCount, e.Tool, summary.TotalTokens, summary.TotalCostUSD)
+			}
 		case "error":
 			_ = p.Abort()
 			return summary, fmt.Errorf("pi error: %s", e.Error)

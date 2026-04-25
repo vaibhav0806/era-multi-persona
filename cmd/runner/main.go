@@ -60,7 +60,7 @@ func run(ctx context.Context, cfg *runnerConfig) error {
 	}
 
 	slog.Info("running pi", "model", cfg.PiModel)
-	summary, piErr := runPi(ctx, p, c)
+	summary, piErr := runPi(ctx, p, c, nil)
 
 	// Even on error, record what we spent and try to push whatever Pi wrote
 	// so the branch is inspectable next morning.
