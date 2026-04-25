@@ -73,7 +73,7 @@ var _ Ops = (*stubOps)(nil)
 func TestHandler_TaskCommand(t *testing.T) {
 	ops := &stubOps{}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 
 	err := h.Handle(context.Background(), Update{ChatID: 42, Text: "/task build auth flow"})
 	require.NoError(t, err)
@@ -85,7 +85,7 @@ func TestHandler_TaskCommand(t *testing.T) {
 func TestHandler_StatusCommand(t *testing.T) {
 	ops := &stubOps{Status: map[int64]string{7: "running"}}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 
 	require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: "/status 7"}))
 	require.Contains(t, strings.ToLower(fc.Sent[0].Text), "running")
@@ -94,7 +94,7 @@ func TestHandler_StatusCommand(t *testing.T) {
 func TestHandler_StatusUnknownTask(t *testing.T) {
 	ops := &stubOps{Status: map[int64]string{}}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 	require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: "/status 99"}))
 	require.Contains(t, fc.Sent[0].Text, "not found")
 }
@@ -102,7 +102,7 @@ func TestHandler_StatusUnknownTask(t *testing.T) {
 func TestHandler_ListCommand(t *testing.T) {
 	ops := &stubOps{}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 	require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: "/list"}))
 	require.True(t, ops.Listed)
 	require.Contains(t, fc.Sent[0].Text, "t1")
@@ -111,7 +111,7 @@ func TestHandler_ListCommand(t *testing.T) {
 func TestHandler_UnknownCommand(t *testing.T) {
 	ops := &stubOps{}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 	require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: "/wat"}))
 	require.Contains(t, strings.ToLower(fc.Sent[0].Text), "unknown")
 }
@@ -119,7 +119,7 @@ func TestHandler_UnknownCommand(t *testing.T) {
 func TestHandler_CallbackQueryDispatched(t *testing.T) {
 	ops := &stubOps{ApprovalReply: "task #42 approved"}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 
 	err := h.Handle(context.Background(), Update{
 		ChatID:   1,
@@ -137,7 +137,7 @@ func TestHandler_CallbackQueryDispatched(t *testing.T) {
 func TestHandler_CallbackQuery_OpsError(t *testing.T) {
 	ops := &stubOps{ApprovalErr: errors.New("not found")}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 
 	err := h.Handle(context.Background(), Update{
 		ChatID:   1,
@@ -152,7 +152,7 @@ func TestHandler_CallbackQuery_OpsError(t *testing.T) {
 func TestHandler_CancelCommand(t *testing.T) {
 	ops := &stubOps{}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 
 	require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: "/cancel 42"}))
 	require.Equal(t, []int64{42}, ops.CancelledIDs)
@@ -163,7 +163,7 @@ func TestHandler_CancelCommand(t *testing.T) {
 func TestHandler_CancelBadArg(t *testing.T) {
 	ops := &stubOps{}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 
 	require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: "/cancel abc"}))
 	require.Empty(t, ops.CancelledIDs)
@@ -174,7 +174,7 @@ func TestHandler_CancelBadArg(t *testing.T) {
 func TestHandler_RetryCommand(t *testing.T) {
 	ops := &stubOps{RetryNewID: 150}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 
 	require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: "/retry 42"}))
 	require.Equal(t, []int64{42}, ops.RetriedIDs)
@@ -185,7 +185,7 @@ func TestHandler_RetryCommand(t *testing.T) {
 func TestHandler_RetryError(t *testing.T) {
 	ops := &stubOps{RetryErr: errors.New("task not found")}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 	require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: "/retry 42"}))
 	require.Len(t, fc.Sent, 1)
 	require.Contains(t, fc.Sent[0].Text, "not found")
@@ -194,7 +194,7 @@ func TestHandler_RetryError(t *testing.T) {
 func TestHandler_CancelError(t *testing.T) {
 	ops := &stubOps{CancelErr: errors.New("running tasks cannot be cancelled")}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 	require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: "/cancel 42"}))
 	require.Len(t, fc.Sent, 1)
 	require.Contains(t, fc.Sent[0].Text, "cannot be cancelled")
@@ -224,7 +224,7 @@ func TestParseTaskArgs(t *testing.T) {
 func TestHandler_TaskCommand_WithRepo(t *testing.T) {
 	ops := &stubOps{}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 	require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: "/task vaibhav0806/foo build auth"}))
 	require.Equal(t, []string{"build auth"}, ops.Created)
 	require.Equal(t, "vaibhav0806/foo", ops.LastCreatedRepo)
@@ -234,7 +234,7 @@ func TestHandler_TaskCommand_WithRepo(t *testing.T) {
 func TestHandler_TaskCommand_WithoutRepo_UsesDefault(t *testing.T) {
 	ops := &stubOps{}
 	fc := NewFakeClient()
-	h := NewHandler(fc, ops)
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
 	require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: "/task add a file"}))
 	require.Equal(t, []string{"add a file"}, ops.Created)
 	require.Equal(t, "", ops.LastCreatedRepo)

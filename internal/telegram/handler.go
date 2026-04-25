@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/vaibhav0806/era/internal/budget"
+	"github.com/vaibhav0806/era/internal/db"
 )
 
 // repoFmtRE matches owner/repo, allowing word chars, dots, dashes.
@@ -59,11 +60,15 @@ type Ops interface {
 }
 
 type Handler struct {
-	client Client
-	ops    Ops
+	client      Client
+	ops         Ops
+	repo        *db.Repo // for GetTaskByCompletionMessageID
+	sandboxRepo string   // reply-DM fallback when target_repo empty
 }
 
-func NewHandler(c Client, ops Ops) *Handler { return &Handler{client: c, ops: ops} }
+func NewHandler(c Client, ops Ops, repo *db.Repo, sandboxRepo string) *Handler {
+	return &Handler{client: c, ops: ops, repo: repo, sandboxRepo: sandboxRepo}
+}
 
 func (h *Handler) Handle(ctx context.Context, u Update) error {
 	// M3: callback queries (button taps)

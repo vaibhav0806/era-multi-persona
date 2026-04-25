@@ -114,7 +114,7 @@ func main() {
 		sandboxRepo: cfg.GitHubSandboxRepo,
 		repo:        repo,
 	})
-	handler := telegram.NewHandler(client, q)
+	handler := telegram.NewHandler(client, q, repo, cfg.GitHubSandboxRepo)
 
 	updates, err := client.Updates(ctx)
 	if err != nil {
