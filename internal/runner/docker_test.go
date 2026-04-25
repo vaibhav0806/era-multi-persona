@@ -3,9 +3,11 @@ package runner_test
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/vaibhav0806/era/internal/progress"
 	"github.com/vaibhav0806/era/internal/runner"
 )
 
@@ -127,6 +129,43 @@ func TestBuildDockerArgs_ZeroFieldsFallBackToDocker(t *testing.T) {
 	requireEnvSet(t, args, "ERA_MAX_ITERATIONS=60")
 	requireEnvSet(t, args, "ERA_MAX_COST_CENTS=20")
 	requireEnvSet(t, args, "ERA_MAX_WALL_SECONDS=1800")
+}
+
+func TestStreamToWithProgress_FiresCallback(t *testing.T) {
+	input := strings.Join([]string{
+		"regular log line",
+		`PROGRESS {"iter":1,"action":"read","tokens_cum":100,"cost_cents_cum":0}`,
+		`PROGRESS {"iter":2,"action":"write","tokens_cum":500,"cost_cents_cum":1}`,
+		`RESULT {"branch":"x","summary":"y","tokens":500,"cost_cents":1}`,
+	}, "\n")
+
+	var mu sync.Mutex
+	var combined strings.Builder
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var got []progress.Event
+	onProgress := func(ev progress.Event) { got = append(got, ev) }
+	go runner.StreamToWithProgress(&mu, strings.NewReader(input), &combined, &wg, onProgress)
+	wg.Wait()
+
+	require.Len(t, got, 2)
+	require.Equal(t, 1, got[0].Iter)
+	require.Equal(t, "read", got[0].Action)
+	require.Equal(t, 2, got[1].Iter)
+	require.Contains(t, combined.String(), "RESULT")
+}
+
+func TestStreamToWithProgress_MalformedJSON_Ignored(t *testing.T) {
+	input := `PROGRESS {bad json` + "\n" + `RESULT {"branch":"x","summary":"y","tokens":0,"cost_cents":0}`
+	var mu sync.Mutex
+	var combined strings.Builder
+	var wg sync.WaitGroup
+	wg.Add(1)
+	called := 0
+	onProgress := func(ev progress.Event) { called++ }
+	go runner.StreamToWithProgress(&mu, strings.NewReader(input), &combined, &wg, onProgress)
+	wg.Wait()
+	require.Equal(t, 0, called)
 }
 
 func requireEnvSet(t *testing.T, args []string, want string) {

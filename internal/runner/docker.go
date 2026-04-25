@@ -14,11 +14,18 @@ import (
 	"sync"
 
 	"github.com/vaibhav0806/era/internal/audit"
+	"github.com/vaibhav0806/era/internal/progress"
 )
 
 // ErrNoResult is returned when a container finishes without emitting a
 // `RESULT <json>` line on stdout.
 var ErrNoResult = errors.New("runner produced no RESULT line")
+
+// ProgressEvent is an alias for progress.Event for convenience in the runner package.
+type ProgressEvent = progress.Event
+
+// ProgressCallback is an alias for progress.Callback for convenience in the runner package.
+type ProgressCallback = progress.Callback
 
 // Docker runs tasks as Docker containers by shelling out to the `docker` CLI.
 // It holds no long-lived credentials; per-task tokens arrive via RunInput.
@@ -95,7 +102,9 @@ func (d *Docker) BuildDockerArgs(in RunInput) []string {
 
 // Run spawns the container, feeds it the task inputs as env vars, waits for
 // it to exit, and parses the RESULT line out of its combined stdout+stderr.
-func (d *Docker) Run(ctx context.Context, in RunInput) (*RunOutput, error) {
+// onProgress is called for each valid PROGRESS line emitted on stdout; pass
+// nil to ignore progress events.
+func (d *Docker) Run(ctx context.Context, in RunInput, onProgress ProgressCallback) (*RunOutput, error) {
 	if in.Repo == "" {
 		in.Repo = d.SandboxRepo // backward-compat default
 	}
@@ -118,8 +127,8 @@ func (d *Docker) Run(ctx context.Context, in RunInput) (*RunOutput, error) {
 	var combined strings.Builder
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go streamTo(&mu, stdout, &combined, &wg)
-	go streamTo(&mu, stderr, &combined, &wg)
+	go StreamToWithProgress(&mu, stdout, &combined, &wg, onProgress)
+	go StreamToWithProgress(&mu, stderr, &combined, &wg, nil)
 	wg.Wait()
 
 	if err := cmd.Wait(); err != nil {
@@ -137,16 +146,26 @@ func (d *Docker) Run(ctx context.Context, in RunInput) (*RunOutput, error) {
 	return out, nil
 }
 
-func streamTo(mu *sync.Mutex, r io.Reader, w *strings.Builder, wg *sync.WaitGroup) {
+// StreamToWithProgress reads lines from r into combined (under mu) and fires
+// onProgress for each valid "PROGRESS <json>" line. wg.Done is called on return.
+// Exported for testing; callers within this package use it directly.
+func StreamToWithProgress(mu *sync.Mutex, r io.Reader, combined *strings.Builder, wg *sync.WaitGroup, onProgress ProgressCallback) {
 	defer wg.Done()
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
 		mu.Lock()
-		w.WriteString(line)
-		w.WriteString("\n")
+		combined.WriteString(line)
+		combined.WriteString("\n")
 		mu.Unlock()
+		if onProgress != nil && strings.HasPrefix(line, "PROGRESS ") {
+			payload := strings.TrimPrefix(line, "PROGRESS ")
+			var ev ProgressEvent
+			if err := json.Unmarshal([]byte(payload), &ev); err == nil {
+				onProgress(ev)
+			}
+		}
 	}
 }
 

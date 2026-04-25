@@ -17,7 +17,8 @@ type QueueAdapter struct {
 
 func (q *QueueAdapter) SetRunning(r *queue.RunningSet) { q.running = r }
 
-func (q *QueueAdapter) Run(ctx context.Context, taskID int64, description, ghToken, repo string, maxIter, maxCents, maxWallSec int) (string, string, int64, int, []audit.Entry, error) {
+func (q *QueueAdapter) Run(ctx context.Context, taskID int64, description, ghToken, repo string,
+	maxIter, maxCents, maxWallSec int, onProgress ProgressCallback) (string, string, int64, int, []audit.Entry, error) {
 	name := fmt.Sprintf("era-runner-%d-%d", taskID, time.Now().UnixNano())
 	if q.running != nil {
 		q.running.Register(taskID, name)
@@ -32,7 +33,7 @@ func (q *QueueAdapter) Run(ctx context.Context, taskID int64, description, ghTok
 		MaxIter:       maxIter,
 		MaxCents:      maxCents,
 		MaxWallSec:    maxWallSec,
-	})
+	}, onProgress)
 	if err != nil {
 		return "", "", 0, 0, nil, err
 	}

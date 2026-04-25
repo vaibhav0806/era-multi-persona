@@ -14,6 +14,7 @@ import (
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
 	"github.com/vaibhav0806/era/internal/githubpr"
+	"github.com/vaibhav0806/era/internal/progress"
 	"github.com/vaibhav0806/era/internal/telegram"
 )
 
@@ -34,10 +35,11 @@ type DiffSource interface {
 // (or empty string if no TokenSource is configured). repo is the resolved
 // target repo (owner/repo) for this task. maxIter/maxCents/maxWallSec are
 // per-task cap overrides resolved from the budget profile; 0 means use the
-// runner's own defaults.
+// runner's own defaults. onProgress is called for each PROGRESS event emitted
+// by the container; implementations may ignore it (pass nil internally).
 type Runner interface {
 	Run(ctx context.Context, taskID int64, description string, ghToken string, repo string,
-		maxIter, maxCents, maxWallSec int) (branch, summary string, tokens int64, costCents int, audits []audit.Entry, err error)
+		maxIter, maxCents, maxWallSec int, onProgress progress.Callback) (branch, summary string, tokens int64, costCents int, audits []audit.Entry, err error)
 }
 
 // NeedsReviewArgs bundles the approval-DM payload. Lives in queue so tests
@@ -189,8 +191,15 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 		profile = budget.Profiles["default"] // unknown stored profile; safe fallback
 	}
 
+	progressCB := func(ev progress.Event) {
+		// AJ-5 wires this to a ProgressNotifier interface; for AJ-4 the
+		// callback is plumbed in but receives no events because no notifier
+		// is set. AJ-5 introduces queue.ProgressNotifier.
+		_ = ev
+	}
+
 	branch, summary, tokens, costCents, audits, runErr := q.runner.Run(ctx, t.ID, t.Description, ghToken, effectiveRepo,
-		profile.MaxIter, profile.MaxCents, profile.MaxWallSec)
+		profile.MaxIter, profile.MaxCents, profile.MaxWallSec, progressCB)
 	if runErr != nil {
 		if q.running != nil && q.running.WasKilled(t.ID) {
 			q.running.ClearKilled(t.ID)

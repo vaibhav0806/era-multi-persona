@@ -10,6 +10,7 @@ import (
 	"github.com/vaibhav0806/era/internal/audit"
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
+	"github.com/vaibhav0806/era/internal/progress"
 	"github.com/vaibhav0806/era/internal/queue"
 )
 
@@ -30,7 +31,7 @@ type fakeRunner struct {
 	lastMaxWallSec int
 }
 
-func (f *fakeRunner) Run(ctx context.Context, taskID int64, desc string, ghToken string, repo string, maxIter, maxCents, maxWallSec int) (string, string, int64, int, []audit.Entry, error) {
+func (f *fakeRunner) Run(ctx context.Context, taskID int64, desc string, ghToken string, repo string, maxIter, maxCents, maxWallSec int, onProgress progress.Callback) (string, string, int64, int, []audit.Entry, error) {
 	f.calls++
 	f.lastID = taskID
 	f.lastDes = desc
