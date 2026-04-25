@@ -63,3 +63,8 @@ UPDATE tasks SET completion_message_id = ? WHERE id = ?;
 
 -- name: GetTaskByCompletionMessageID :one
 SELECT * FROM tasks WHERE completion_message_id = ? LIMIT 1;
+
+-- name: CreateAskTask :one
+INSERT INTO tasks (description, target_repo, budget_profile, read_only, status)
+VALUES (?, ?, 'quick', 1, 'queued')
+RETURNING *;

@@ -196,3 +196,13 @@ func TestRepo_CompletionMessageID_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, task.ID, got.ID)
 }
+
+func TestRepo_CreateAskTask_AtomicReadOnlyQuick(t *testing.T) {
+	repo := openTest(t)
+	task, err := repo.CreateAskTask(context.Background(), "what is in main.go", "vaibhav0806/foo")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), task.ReadOnly)
+	require.Equal(t, "quick", task.BudgetProfile)
+	require.Equal(t, "queued", task.Status)
+	require.Equal(t, "vaibhav0806/foo", task.TargetRepo)
+}

@@ -12,6 +12,7 @@ import (
 type Querier interface {
 	AppendEvent(ctx context.Context, arg AppendEventParams) error
 	ClaimNextQueuedTask(ctx context.Context) (Task, error)
+	CreateAskTask(ctx context.Context, arg CreateAskTaskParams) (Task, error)
 	// queries/tasks.sql
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	GetTask(ctx context.Context, id int64) (Task, error)

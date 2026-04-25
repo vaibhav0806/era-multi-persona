@@ -42,4 +42,5 @@ type Task struct {
 	PrNumber            sql.NullInt64  `json:"pr_number"`
 	BudgetProfile       string         `json:"budget_profile"`
 	CompletionMessageID sql.NullInt64  `json:"completion_message_id"`
+	ReadOnly            int64          `json:"read_only"`
 }

@@ -29,7 +29,7 @@ func (q *Queries) AppendEvent(ctx context.Context, arg AppendEventParams) error 
 const claimNextQueuedTask = `-- name: ClaimNextQueuedTask :one
 UPDATE tasks SET status = 'running', started_at = CURRENT_TIMESTAMP
 WHERE id = (SELECT id FROM tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1)
-RETURNING id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id
+RETURNING id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id, read_only
 `
 
 func (q *Queries) ClaimNextQueuedTask(ctx context.Context) (Task, error) {
@@ -51,6 +51,42 @@ func (q *Queries) ClaimNextQueuedTask(ctx context.Context) (Task, error) {
 		&i.PrNumber,
 		&i.BudgetProfile,
 		&i.CompletionMessageID,
+		&i.ReadOnly,
+	)
+	return i, err
+}
+
+const createAskTask = `-- name: CreateAskTask :one
+INSERT INTO tasks (description, target_repo, budget_profile, read_only, status)
+VALUES (?, ?, 'quick', 1, 'queued')
+RETURNING id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id, read_only
+`
+
+type CreateAskTaskParams struct {
+	Description string `json:"description"`
+	TargetRepo  string `json:"target_repo"`
+}
+
+func (q *Queries) CreateAskTask(ctx context.Context, arg CreateAskTaskParams) (Task, error) {
+	row := q.db.QueryRowContext(ctx, createAskTask, arg.Description, arg.TargetRepo)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.Description,
+		&i.Status,
+		&i.BranchName,
+		&i.Summary,
+		&i.Error,
+		&i.TokensUsed,
+		&i.CostCents,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.TargetRepo,
+		&i.PrNumber,
+		&i.BudgetProfile,
+		&i.CompletionMessageID,
+		&i.ReadOnly,
 	)
 	return i, err
 }
@@ -59,7 +95,7 @@ const createTask = `-- name: CreateTask :one
 
 INSERT INTO tasks (description, status, target_repo, budget_profile)
 VALUES (?, 'queued', ?, ?)
-RETURNING id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id
+RETURNING id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id, read_only
 `
 
 type CreateTaskParams struct {
@@ -88,12 +124,13 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.PrNumber,
 		&i.BudgetProfile,
 		&i.CompletionMessageID,
+		&i.ReadOnly,
 	)
 	return i, err
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id FROM tasks WHERE id = ? LIMIT 1
+SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id, read_only FROM tasks WHERE id = ? LIMIT 1
 `
 
 func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
@@ -115,12 +152,13 @@ func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
 		&i.PrNumber,
 		&i.BudgetProfile,
 		&i.CompletionMessageID,
+		&i.ReadOnly,
 	)
 	return i, err
 }
 
 const getTaskByCompletionMessageID = `-- name: GetTaskByCompletionMessageID :one
-SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id FROM tasks WHERE completion_message_id = ? LIMIT 1
+SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id, read_only FROM tasks WHERE completion_message_id = ? LIMIT 1
 `
 
 func (q *Queries) GetTaskByCompletionMessageID(ctx context.Context, completionMessageID sql.NullInt64) (Task, error) {
@@ -142,6 +180,7 @@ func (q *Queries) GetTaskByCompletionMessageID(ctx context.Context, completionMe
 		&i.PrNumber,
 		&i.BudgetProfile,
 		&i.CompletionMessageID,
+		&i.ReadOnly,
 	)
 	return i, err
 }
@@ -180,7 +219,7 @@ func (q *Queries) ListEventsForTask(ctx context.Context, taskID int64) ([]Event,
 }
 
 const listRecentTasks = `-- name: ListRecentTasks :many
-SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id FROM tasks ORDER BY created_at DESC LIMIT ?
+SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id, read_only FROM tasks ORDER BY created_at DESC LIMIT ?
 `
 
 func (q *Queries) ListRecentTasks(ctx context.Context, limit int64) ([]Task, error) {
@@ -208,6 +247,7 @@ func (q *Queries) ListRecentTasks(ctx context.Context, limit int64) ([]Task, err
 			&i.PrNumber,
 			&i.BudgetProfile,
 			&i.CompletionMessageID,
+			&i.ReadOnly,
 		); err != nil {
 			return nil, err
 		}
@@ -250,7 +290,7 @@ func (q *Queries) ListRunningTaskIDs(ctx context.Context) ([]int64, error) {
 }
 
 const listTasksBetween = `-- name: ListTasksBetween :many
-SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id FROM tasks
+SELECT id, description, status, branch_name, summary, error, tokens_used, cost_cents, created_at, started_at, finished_at, target_repo, pr_number, budget_profile, completion_message_id, read_only FROM tasks
 WHERE created_at >= ? AND created_at < ?
 ORDER BY id ASC
 `
@@ -285,6 +325,7 @@ func (q *Queries) ListTasksBetween(ctx context.Context, arg ListTasksBetweenPara
 			&i.PrNumber,
 			&i.BudgetProfile,
 			&i.CompletionMessageID,
+			&i.ReadOnly,
 		); err != nil {
 			return nil, err
 		}

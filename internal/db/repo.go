@@ -110,3 +110,10 @@ func (r *Repo) SetCompletionMessageID(ctx context.Context, id, msgID int64) erro
 func (r *Repo) GetTaskByCompletionMessageID(ctx context.Context, msgID int64) (Task, error) {
 	return r.q.GetTaskByCompletionMessageID(ctx, sql.NullInt64{Int64: msgID, Valid: true})
 }
+
+func (r *Repo) CreateAskTask(ctx context.Context, desc, targetRepo string) (Task, error) {
+	return r.q.CreateAskTask(ctx, CreateAskTaskParams{
+		Description: desc,
+		TargetRepo:  targetRepo,
+	})
+}
