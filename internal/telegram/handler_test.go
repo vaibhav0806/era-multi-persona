@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/vaibhav0806/era/internal/db"
+	"github.com/vaibhav0806/era/internal/stats"
 )
 
 // stubOps records calls instead of touching a real DB.
@@ -37,6 +38,9 @@ type stubOps struct {
 	// AK-3: ask routing
 	lastAskRepo string
 	lastAskDesc string
+
+	// AL-3: stats
+	statsResult stats.Stats
 }
 
 func (s *stubOps) CreateTask(ctx context.Context, desc, targetRepo, profile string) (int64, error) {
@@ -87,6 +91,10 @@ func (s *stubOps) CreateAskTask(ctx context.Context, desc, targetRepo string) (i
 	s.lastAskDesc = desc
 	s.lastAskRepo = targetRepo
 	return s.nextID, nil
+}
+
+func (s *stubOps) Stats(ctx context.Context) (stats.Stats, error) {
+	return s.statsResult, nil
 }
 
 // compile-time assertion that stubOps satisfies Ops
@@ -344,4 +352,27 @@ func TestHandler_ReplyWithCommandPrefix_FallsThroughToCommand(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotContains(t, f.Sent[0].Text, "couldn't find")
+}
+
+func TestHandler_StatsCommand_SendsFormattedDM(t *testing.T) {
+	ctx := context.Background()
+	f := NewFakeClient()
+	ops := &stubOps{
+		statsResult: stats.Stats{
+			Last24h:      stats.PeriodStats{TasksTotal: 5, TasksOK: 4, Tokens: 1500, CostCents: 8},
+			Last7d:       stats.PeriodStats{TasksTotal: 20, TasksOK: 17, Tokens: 8500, CostCents: 75},
+			Last30d:      stats.PeriodStats{TasksTotal: 80, TasksOK: 65, Tokens: 41000, CostCents: 320},
+			PendingQueue: 0,
+		},
+	}
+	h := NewHandler(f, ops, nil, "vaibhav0806/sandbox")
+	err := h.Handle(ctx, Update{ChatID: 1, Text: "/stats"})
+	require.NoError(t, err)
+	require.Len(t, f.Sent, 1)
+	body := f.Sent[0].Text
+	require.Contains(t, body, "era stats")
+	require.Contains(t, body, "tasks:")
+	require.Contains(t, body, "5")
+	require.Contains(t, body, "80")
+	require.Contains(t, body, "queue: 0 pending")
 }

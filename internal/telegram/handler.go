@@ -12,6 +12,7 @@ import (
 	"github.com/vaibhav0806/era/internal/budget"
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/replyprompt"
+	"github.com/vaibhav0806/era/internal/stats"
 )
 
 // repoFmtRE matches owner/repo, allowing word chars, dots, dashes.
@@ -72,6 +73,7 @@ type Ops interface {
 	// the handler dispatch lines are added in M3-9.
 	CancelTask(ctx context.Context, id int64) error
 	RetryTask(ctx context.Context, id int64) (newID int64, err error)
+	Stats(ctx context.Context) (stats.Stats, error)
 }
 
 type Handler struct {
@@ -209,8 +211,17 @@ func (h *Handler) Handle(ctx context.Context, u Update) error {
 			"usage: /ask <owner>/<repo> <question>")
 		return err
 
+	case text == "/stats":
+		s, err := h.ops.Stats(ctx)
+		if err != nil {
+			_, err := h.client.SendMessage(ctx, u.ChatID, fmt.Sprintf("error: %v", err))
+			return err
+		}
+		_, err = h.client.SendMessage(ctx, u.ChatID, formatStatsDM(s))
+		return err
+
 	default:
-		_, err := h.client.SendMessage(ctx, u.ChatID, "unknown command. try /task, /ask, /status, /list, /cancel, /retry")
+		_, err := h.client.SendMessage(ctx, u.ChatID, "unknown command. try /task, /ask, /status, /list, /cancel, /retry, /stats")
 		return err
 	}
 }
@@ -249,3 +260,30 @@ func (h *Handler) handleCallback(ctx context.Context, u Update) error {
 	}
 	return h.client.AnswerCallback(ctx, u.Callback.ID, reply)
 }
+
+func formatStatsDM(s stats.Stats) string {
+	return fmt.Sprintf(
+		`era stats
+────────────
+            24h    7d     30d
+tasks:      %-6d %-6d %-d
+success:    %-6s %-6s %s
+tokens:     %-6s %-6s %s
+cost:       %-6s %-6s %s
+queue: %d pending`,
+		s.Last24h.TasksTotal, s.Last7d.TasksTotal, s.Last30d.TasksTotal,
+		pctStr(s.Last24h.SuccessRate()), pctStr(s.Last7d.SuccessRate()), pctStr(s.Last30d.SuccessRate()),
+		kStr(s.Last24h.Tokens), kStr(s.Last7d.Tokens), kStr(s.Last30d.Tokens),
+		costStr(s.Last24h.CostCents), costStr(s.Last7d.CostCents), costStr(s.Last30d.CostCents),
+		s.PendingQueue,
+	)
+}
+
+func pctStr(x float64) string { return fmt.Sprintf("%.0f%%", x*100) }
+func kStr(n int64) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	return fmt.Sprintf("%dk", n/1000)
+}
+func costStr(c int64) string { return fmt.Sprintf("$%.2f", float64(c)/100.0) }

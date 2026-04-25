@@ -3,30 +3,13 @@ package queue
 import (
 	"context"
 	"time"
+
+	"github.com/vaibhav0806/era/internal/stats"
 )
 
-type PeriodStats struct {
-	TasksTotal int
-	TasksOK    int
-	Tokens     int64
-	CostCents  int64
-}
-
-func (p PeriodStats) SuccessRate() float64 {
-	if p.TasksTotal == 0 {
-		return 0
-	}
-	return float64(p.TasksOK) / float64(p.TasksTotal)
-}
-
-type Stats struct {
-	Last24h, Last7d, Last30d PeriodStats
-	PendingQueue             int
-}
-
-func (q *Queue) Stats(ctx context.Context) (Stats, error) {
-	var s Stats
-	targets := []*PeriodStats{&s.Last24h, &s.Last7d, &s.Last30d}
+func (q *Queue) Stats(ctx context.Context) (stats.Stats, error) {
+	var s stats.Stats
+	targets := []*stats.PeriodStats{&s.Last24h, &s.Last7d, &s.Last30d}
 	durs := []time.Duration{24 * time.Hour, 7 * 24 * time.Hour, 30 * 24 * time.Hour}
 	now := time.Now().UTC()
 

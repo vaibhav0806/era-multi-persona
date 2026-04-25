@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/vaibhav0806/era/internal/queue"
+	"github.com/vaibhav0806/era/internal/stats"
 )
 
 func TestStats_EmptyDB_ReturnsZeros(t *testing.T) {
@@ -46,8 +46,8 @@ func TestStats_MixedStatuses_CountsSuccessRate(t *testing.T) {
 }
 
 func TestPeriodStats_SuccessRate(t *testing.T) {
-	p := queue.PeriodStats{}
+	p := stats.PeriodStats{}
 	require.Equal(t, 0.0, p.SuccessRate())
-	p2 := queue.PeriodStats{TasksTotal: 10, TasksOK: 7}
+	p2 := stats.PeriodStats{TasksTotal: 10, TasksOK: 7}
 	require.InDelta(t, 0.7, p2.SuccessRate(), 0.001)
 }
