@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/vaibhav0806/era-multi-persona/era-brain/brain"
 	"github.com/vaibhav0806/era/internal/audit"
 	"github.com/vaibhav0806/era/internal/budget"
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
 	"github.com/vaibhav0806/era/internal/githubpr"
 	"github.com/vaibhav0806/era/internal/progress"
+	"github.com/vaibhav0806/era/internal/swarm"
 	"github.com/vaibhav0806/era/internal/telegram"
 )
 
@@ -42,24 +45,50 @@ type Runner interface {
 		maxIter, maxCents, maxWallSec int, readOnly bool, onProgress progress.Callback) (branch, summary string, tokens int64, costCents int, audits []audit.Entry, err error)
 }
 
+// Swarm is the queue's view of the era-brain swarm: planner before runner.Run,
+// reviewer after. Defined here so queue tests can inject a stub.
+type Swarm interface {
+	Plan(ctx context.Context, args swarm.PlanArgs) (swarm.PlanResult, error)
+	Review(ctx context.Context, args swarm.ReviewArgs) (swarm.ReviewResult, error)
+}
+
 // NeedsReviewArgs bundles the approval-DM payload. Lives in queue so tests
 // can assert shape without importing telegram or diffscan types up there.
 type NeedsReviewArgs struct {
-	TaskID    int64
-	Branch    string
-	Summary   string
-	Tokens    int64
-	CostCents int
-	Findings  []diffscan.Finding
-	Diffs     []diffscan.FileDiff
-	PRURL     string // was CompareURL; now PR html_url (or branch URL fallback when PR creation fails)
+	TaskID           int64
+	Branch           string
+	Summary          string
+	Tokens           int64
+	CostCents        int
+	Findings         []diffscan.Finding
+	Diffs            []diffscan.FileDiff
+	PRURL            string // was CompareURL; now PR html_url (or branch URL fallback when PR creation fails)
+	PlannerPlan      string
+	ReviewerCritique string
+	Receipts         []brain.Receipt // [planner, coder, reviewer] in order
+}
+
+// CompletedArgs bundles the completion-DM payload so we can extend persona
+// breakdown without touching the Notifier signature again. Mirrors NeedsReviewArgs shape.
+type CompletedArgs struct {
+	TaskID           int64
+	Repo             string
+	Branch           string
+	PRURL            string
+	Summary          string
+	Tokens           int64
+	CostCents        int
+	Receipts         []brain.Receipt // [planner, coder, reviewer] in order
+	PlannerPlan      string
+	ReviewerCritique string
+	ReviewerDecision string // "approve" or "flag"
 }
 
 // Notifier is called by RunNext when a task finishes. All methods are
 // fire-and-forget — the notifier is expected to log its own errors and
 // return promptly.
 type Notifier interface {
-	NotifyCompleted(ctx context.Context, taskID int64, repo, branch, prURL, summary string, tokens int64, costCents int)
+	NotifyCompleted(ctx context.Context, args CompletedArgs)
 	NotifyFailed(ctx context.Context, taskID int64, reason string)
 	NotifyNeedsReview(ctx context.Context, args NeedsReviewArgs)
 	NotifyCancelled(ctx context.Context, taskID int64)
@@ -109,6 +138,7 @@ type Queue struct {
 	prCreator        PRCreator       // may be nil
 	killer           ContainerKiller // may be nil
 	running          *RunningSet     // initialized in New
+	swarm            Swarm           // may be nil
 }
 
 func New(repo *db.Repo, runner Runner, tokens TokenSource, compare DiffSource, repoFQN string) *Queue {
@@ -127,6 +157,9 @@ func New(repo *db.Repo, runner Runner, tokens TokenSource, compare DiffSource, r
 func (q *Queue) SetNotifier(n Notifier) { q.notifier = n }
 
 func (q *Queue) SetProgressNotifier(p ProgressNotifier) { q.progressNotifier = p }
+
+// SetSwarm attaches a Swarm to this Queue. Safe to call once at startup.
+func (q *Queue) SetSwarm(s Swarm) { q.swarm = s }
 
 func (q *Queue) CreateAskTask(ctx context.Context, desc, targetRepo string) (int64, error) {
 	task, err := q.repo.CreateAskTask(ctx, desc, targetRepo)
@@ -227,8 +260,28 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 		}
 	}
 
+	// Plan: run planner persona before the container starts.
+	var planText string
+	var plannerReceipt brain.Receipt
+	if q.swarm != nil {
+		pr, perr := q.swarm.Plan(ctx, swarm.PlanArgs{
+			TaskID:          fmt.Sprintf("%d", t.ID),
+			TaskDescription: t.Description,
+		})
+		if perr != nil {
+			// Planner failure shouldn't block the task — log and continue.
+			_ = q.repo.AppendEvent(ctx, t.ID, "planner_failed", quoteJSON(perr.Error()))
+		} else {
+			planText = pr.PlanText
+			plannerReceipt = pr.Receipt
+			_ = q.repo.AppendEvent(ctx, t.ID, "planner_ok", quoteJSON(planText))
+		}
+	}
+
+	effectiveDesc := swarm.InjectPlan(t.Description, planText)
+
 	readOnly := t.ReadOnly == 1
-	branch, summary, tokens, costCents, audits, runErr := q.runner.Run(ctx, t.ID, t.Description, ghToken, effectiveRepo,
+	branch, summary, tokens, costCents, audits, runErr := q.runner.Run(ctx, t.ID, effectiveDesc, ghToken, effectiveRepo,
 		profile.MaxIter, profile.MaxCents, profile.MaxWallSec, readOnly, progressCB)
 	if runErr != nil {
 		if q.running != nil && q.running.WasKilled(t.ID) {
@@ -309,24 +362,104 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 			}
 		}
 	}
+
+	// Review: fetch diff (best-effort), run reviewer persona.
+	var reviewerReceipt brain.Receipt
+	var reviewCritique string
+	reviewDecision := swarm.DecisionApprove // default: approve when no swarm wired (preserves old behavior)
+
+	if q.swarm != nil && branch != "" {
+		var diffText string
+		if q.compare != nil {
+			if files, derr := q.compare.Compare(ctx, effectiveRepo, base, branch); derr == nil {
+				diffText = renderDiffText(files)
+			} else {
+				_ = q.repo.AppendEvent(ctx, t.ID, "diff_fetch_failed", quoteJSON(derr.Error()))
+			}
+		}
+		rr, rerr := q.swarm.Review(ctx, swarm.ReviewArgs{
+			TaskID:          fmt.Sprintf("%d", t.ID),
+			TaskDescription: t.Description, // original, not effectiveDesc
+			PlanText:        planText,
+			DiffText:        diffText,
+		})
+		if rerr != nil {
+			_ = q.repo.AppendEvent(ctx, t.ID, "reviewer_failed", quoteJSON(rerr.Error()))
+			reviewDecision = swarm.DecisionFlag
+		} else {
+			reviewerReceipt = rr.Receipt
+			reviewCritique = rr.CritiqueText
+			reviewDecision = rr.Decision
+			_ = q.repo.AppendEvent(ctx, t.ID, "reviewer_ok", quoteJSON(string(reviewDecision)))
+		}
+	}
+
 	if q.notifier != nil {
-		if len(flaggedFindings) > 0 {
-			q.notifier.NotifyNeedsReview(ctx, NeedsReviewArgs{
-				TaskID:    t.ID,
-				Branch:    branch,
-				Summary:   summary,
-				Tokens:    tokens,
-				CostCents: costCents,
-				Findings:  flaggedFindings,
-				Diffs:     flaggedDiffs,
-				PRURL:     prURL,
+		clean := len(flaggedFindings) == 0 && reviewDecision == swarm.DecisionApprove
+		if clean {
+			q.notifier.NotifyCompleted(ctx, CompletedArgs{
+				TaskID:           t.ID,
+				Repo:             effectiveRepo,
+				Branch:           branch,
+				PRURL:            prURL,
+				Summary:          summary,
+				Tokens:           tokens,
+				CostCents:        costCents,
+				Receipts:         []brain.Receipt{plannerReceipt, synthCoderReceipt(), reviewerReceipt},
+				PlannerPlan:      planText,
+				ReviewerCritique: reviewCritique,
+				ReviewerDecision: string(reviewDecision),
 			})
 		} else {
-			q.notifier.NotifyCompleted(ctx, t.ID, effectiveRepo, branch, prURL,
-				summary, tokens, costCents)
+			q.notifier.NotifyNeedsReview(ctx, NeedsReviewArgs{
+				TaskID:           t.ID,
+				Branch:           branch,
+				Summary:          summary,
+				Tokens:           tokens,
+				CostCents:        costCents,
+				Findings:         flaggedFindings,
+				Diffs:            flaggedDiffs,
+				PRURL:            prURL,
+				PlannerPlan:      planText,
+				ReviewerCritique: reviewCritique,
+				Receipts:         []brain.Receipt{plannerReceipt, synthCoderReceipt(), reviewerReceipt},
+			})
 		}
 	}
 	return true, nil
+}
+
+// renderDiffText composes a unified-diff-shaped string from []diffscan.FileDiff
+// for the reviewer persona. Lossy (no @@ context lines) but enough for the
+// reviewer LLM to spot test removals, weakened assertions, and plan deviations.
+func renderDiffText(files []diffscan.FileDiff) string {
+	var b strings.Builder
+	for _, f := range files {
+		fmt.Fprintf(&b, "--- %s\n+++ %s\n", f.Path, f.Path)
+		for _, line := range f.Removed {
+			b.WriteString("-")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		for _, line := range f.Added {
+			b.WriteString("+")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// synthCoderReceipt synthesizes a placeholder receipt for the coder persona.
+// Pi runs inside the container; era-brain has no view of its prompt or diff
+// body. M7-D's iNFT recordInvocation skips coder receipts where Sealed=false
+// and hashes are empty, so this placeholder doesn't pollute on-chain state.
+func synthCoderReceipt() brain.Receipt {
+	return brain.Receipt{
+		Persona:       "coder",
+		Sealed:        false,
+		TimestampUnix: time.Now().Unix(),
+	}
 }
 
 func quoteJSON(s string) string {

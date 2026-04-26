@@ -8,11 +8,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/brain"
 	"github.com/vaibhav0806/era/internal/audit"
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
 	"github.com/vaibhav0806/era/internal/progress"
 	"github.com/vaibhav0806/era/internal/queue"
+	"github.com/vaibhav0806/era/internal/swarm"
 )
 
 type fakeRunner struct {
@@ -181,13 +183,17 @@ func TestQueue_RunNext_NoTasks(t *testing.T) {
 }
 
 type completedArgs struct {
-	ID        int64
-	Repo      string
-	Branch    string
-	PRURL     string
-	Summary   string
-	Tokens    int64
-	CostCents int
+	ID               int64
+	Repo             string
+	Branch           string
+	PRURL            string
+	Summary          string
+	Tokens           int64
+	CostCents        int
+	Receipts         []brain.Receipt
+	PlannerPlan      string
+	ReviewerCritique string
+	ReviewerDecision string
 }
 type failedArgs struct {
 	ID     int64
@@ -212,8 +218,20 @@ type fakeNotifier struct {
 	cancelled   []int64
 }
 
-func (f *fakeNotifier) NotifyCompleted(ctx context.Context, id int64, repo, b, prURL, s string, t int64, c int) {
-	f.completed = append(f.completed, completedArgs{id, repo, b, prURL, s, t, c})
+func (f *fakeNotifier) NotifyCompleted(ctx context.Context, a queue.CompletedArgs) {
+	f.completed = append(f.completed, completedArgs{
+		ID:               a.TaskID,
+		Repo:             a.Repo,
+		Branch:           a.Branch,
+		PRURL:            a.PRURL,
+		Summary:          a.Summary,
+		Tokens:           a.Tokens,
+		CostCents:        a.CostCents,
+		Receipts:         a.Receipts,
+		PlannerPlan:      a.PlannerPlan,
+		ReviewerCritique: a.ReviewerCritique,
+		ReviewerDecision: a.ReviewerDecision,
+	})
 }
 func (f *fakeNotifier) NotifyFailed(ctx context.Context, id int64, r string) {
 	f.failed = append(f.failed, failedArgs{id, r})
@@ -721,4 +739,66 @@ func TestQueue_RunNext_FiresProgress(t *testing.T) {
 	require.Len(t, pn.events, 2)
 	require.Equal(t, "read", pn.events[0].Ev.Action)
 	require.Equal(t, "write", pn.events[1].Ev.Action)
+}
+
+// stubSwarm is a test double for queue.Swarm.
+type stubSwarm struct {
+	plannedDesc    string
+	planText       string
+	reviewedDiff   string
+	reviewDecision swarm.Decision
+}
+
+func (s *stubSwarm) Plan(_ context.Context, args swarm.PlanArgs) (swarm.PlanResult, error) {
+	s.plannedDesc = args.TaskDescription
+	return swarm.PlanResult{
+		PlanText: s.planText,
+		Receipt:  brain.Receipt{Persona: "planner", Model: "stub"},
+	}, nil
+}
+
+func (s *stubSwarm) Review(_ context.Context, args swarm.ReviewArgs) (swarm.ReviewResult, error) {
+	s.reviewedDiff = args.DiffText
+	return swarm.ReviewResult{
+		CritiqueText: "ok",
+		Decision:     s.reviewDecision,
+		Receipt:      brain.Receipt{Persona: "reviewer", Model: "stub"},
+	}, nil
+}
+
+func TestRunNext_PlannerInjectedIntoRunnerDescription(t *testing.T) {
+	ctx := context.Background()
+	fr := &fakeRunner{branch: "agent/1/ok", summary: "done", tokens: 10, costCents: 1}
+	q, _ := newRunQueue(t, fr)
+
+	stub := &stubSwarm{
+		planText:       "P1\nP2",
+		reviewDecision: swarm.DecisionApprove,
+	}
+	q.SetSwarm(stub)
+
+	n := &fakeNotifier{}
+	q.SetNotifier(n)
+
+	id, err := q.CreateTask(ctx, "implement login", "", "default")
+	require.NoError(t, err)
+
+	_, err = q.RunNext(ctx)
+	require.NoError(t, err)
+
+	// The description passed to the runner must contain both the original task
+	// and the plan text injected by InjectPlan.
+	require.Contains(t, fr.lastDes, "implement login")
+	require.Contains(t, fr.lastDes, "P1\nP2")
+
+	// NotifyCompleted should have fired (reviewer approved, no diff findings).
+	require.Len(t, n.completed, 1)
+	require.Equal(t, id, n.completed[0].ID)
+	require.Equal(t, "P1\nP2", n.completed[0].PlannerPlan)
+	require.Equal(t, "approve", n.completed[0].ReviewerDecision)
+	// Three receipts: planner, coder, reviewer.
+	require.Len(t, n.completed[0].Receipts, 3)
+	require.Equal(t, "planner", n.completed[0].Receipts[0].Persona)
+	require.Equal(t, "coder", n.completed[0].Receipts[1].Persona)
+	require.Equal(t, "reviewer", n.completed[0].Receipts[2].Persona)
 }

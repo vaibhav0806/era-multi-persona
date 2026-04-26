@@ -12,7 +12,11 @@ import (
 	"syscall"
 	"time"
 
+	"path/filepath"
+
 	"github.com/joho/godotenv"
+	brainsqlite "github.com/vaibhav0806/era-multi-persona/era-brain/memory/sqlite"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/openrouter"
 	"github.com/vaibhav0806/era/internal/config"
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
@@ -23,6 +27,7 @@ import (
 	"github.com/vaibhav0806/era/internal/githubpr"
 	"github.com/vaibhav0806/era/internal/queue"
 	"github.com/vaibhav0806/era/internal/runner"
+	"github.com/vaibhav0806/era/internal/swarm"
 	"github.com/vaibhav0806/era/internal/telegram"
 )
 
@@ -98,6 +103,24 @@ func main() {
 	q.SetBranchDeleter(branchDeleter)
 	q.SetPRCreator(prClient)
 	q.SetKiller(queue.NewDockerKiller())
+
+	// Task 3: wire era-brain swarm (planner + reviewer personas).
+	plannerModel := envOrDefault("PI_BRAIN_PLANNER_MODEL", "openai/gpt-4o-mini")
+	reviewerModel := envOrDefault("PI_BRAIN_REVIEWER_MODEL", "openai/gpt-4o-mini")
+	plannerLLM := openrouter.New(openrouter.Config{APIKey: cfg.OpenRouterAPIKey, DefaultModel: plannerModel})
+	reviewerLLM := openrouter.New(openrouter.Config{APIKey: cfg.OpenRouterAPIKey, DefaultModel: reviewerModel})
+	brainDBPath := filepath.Join(filepath.Dir(cfg.DBPath), "era-brain.db")
+	brainMem, err := brainsqlite.Open(brainDBPath)
+	if err != nil {
+		fail(fmt.Errorf("era-brain sqlite: %w", err))
+	}
+	defer brainMem.Close()
+	sw := swarm.New(swarm.Config{
+		PlannerLLM:  plannerLLM,
+		ReviewerLLM: reviewerLLM,
+		Memory:      brainMem,
+	})
+	q.SetSwarm(sw)
 
 	if n, err := q.Reconcile(ctx); err != nil {
 		slog.Error("reconcile", "err", err)
@@ -175,6 +198,13 @@ func fail(err error) {
 	os.Exit(1)
 }
 
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
 type tgNotifier struct {
 	client       telegram.Client
 	chatID       int64
@@ -183,27 +213,29 @@ type tgNotifier struct {
 	progressMsgs sync.Map // taskID (int64) → telegram message ID (int64)
 }
 
-func (n *tgNotifier) NotifyCompleted(ctx context.Context, id int64, repo, branch, prURL, summary string, tokens int64, costCents int) {
+func (n *tgNotifier) NotifyCompleted(ctx context.Context, a queue.CompletedArgs) {
+	repo := a.Repo
 	if repo == "" {
 		repo = n.sandboxRepo
 	}
+	_ = repo // used for fallback only; future Task 5 will render per-persona breakdown
 	var msg string
-	if branch == "" {
+	if a.Branch == "" {
 		msg = fmt.Sprintf("task #%d: no changes\nsummary: %s\ntokens: %d  cost: $%.2f",
-			id, truncateForTelegram(summary, 3500), tokens, float64(costCents)/100.0)
+			a.TaskID, truncateForTelegram(a.Summary, 3500), a.Tokens, float64(a.CostCents)/100.0)
 	} else {
 		msg = fmt.Sprintf(
 			"task #%d completed\nbranch: %s\n%s\nsummary: %s\ntokens: %d  cost: $%.2f",
-			id, branch, prURL, truncateForTelegram(summary, 3500), tokens, float64(costCents)/100.0,
+			a.TaskID, a.Branch, a.PRURL, truncateForTelegram(a.Summary, 3500), a.Tokens, float64(a.CostCents)/100.0,
 		)
 	}
 	msgID, err := n.client.SendMessage(ctx, n.chatID, msg)
 	if err != nil {
-		slog.Error("notify completed", "err", err, "task", id)
+		slog.Error("notify completed", "err", err, "task", a.TaskID)
 		return
 	}
-	if err := n.repo.SetCompletionMessageID(ctx, id, msgID); err != nil {
-		slog.Warn("set completion message id", "err", err, "task", id)
+	if err := n.repo.SetCompletionMessageID(ctx, a.TaskID, msgID); err != nil {
+		slog.Warn("set completion message id", "err", err, "task", a.TaskID)
 	}
 }
 
