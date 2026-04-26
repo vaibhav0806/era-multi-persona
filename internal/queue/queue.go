@@ -140,6 +140,7 @@ type Queue struct {
 	killer           ContainerKiller // may be nil
 	running          *RunningSet     // initialized in New
 	swarm            Swarm           // may be nil
+	userID           string
 }
 
 func New(repo *db.Repo, runner Runner, tokens TokenSource, compare DiffSource, repoFQN string) *Queue {
@@ -161,6 +162,9 @@ func (q *Queue) SetProgressNotifier(p ProgressNotifier) { q.progressNotifier = p
 
 // SetSwarm attaches a Swarm to this Queue. Safe to call once at startup.
 func (q *Queue) SetSwarm(s Swarm) { q.swarm = s }
+
+// SetUserID sets the user identity threaded into swarm Plan/Review calls.
+func (q *Queue) SetUserID(id string) { q.userID = id }
 
 func (q *Queue) CreateAskTask(ctx context.Context, desc, targetRepo string) (int64, error) {
 	task, err := q.repo.CreateAskTask(ctx, desc, targetRepo)
@@ -268,6 +272,7 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 		pr, perr := q.swarm.Plan(ctx, swarm.PlanArgs{
 			TaskID:          fmt.Sprintf("%d", t.ID),
 			TaskDescription: t.Description,
+			UserID:          q.userID,
 		})
 		if perr != nil {
 			// Planner failure shouldn't block the task — log and continue.
@@ -383,6 +388,7 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 			TaskDescription: t.Description, // original, not effectiveDesc
 			PlanText:        planText,
 			DiffText:        diffText,
+			UserID:          q.userID,
 		})
 		if rerr != nil {
 			_ = q.repo.AppendEvent(ctx, t.ID, "reviewer_failed", quoteJSON(rerr.Error()))

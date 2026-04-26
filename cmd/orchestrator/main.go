@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -153,6 +154,7 @@ func main() {
 		Memory:      memProv,
 	})
 	q.SetSwarm(sw)
+	q.SetUserID(strconv.FormatInt(cfg.TelegramAllowedUserID, 10))
 
 	if n, err := q.Reconcile(ctx); err != nil {
 		slog.Error("reconcile", "err", err)

@@ -747,9 +747,12 @@ type stubSwarm struct {
 	planText       string
 	reviewedDiff   string
 	reviewDecision swarm.Decision
+	lastPlanArgs   swarm.PlanArgs
+	lastReviewArgs swarm.ReviewArgs
 }
 
 func (s *stubSwarm) Plan(_ context.Context, args swarm.PlanArgs) (swarm.PlanResult, error) {
+	s.lastPlanArgs = args
 	s.plannedDesc = args.TaskDescription
 	return swarm.PlanResult{
 		PlanText: s.planText,
@@ -758,6 +761,7 @@ func (s *stubSwarm) Plan(_ context.Context, args swarm.PlanArgs) (swarm.PlanResu
 }
 
 func (s *stubSwarm) Review(_ context.Context, args swarm.ReviewArgs) (swarm.ReviewResult, error) {
+	s.lastReviewArgs = args
 	s.reviewedDiff = args.DiffText
 	return swarm.ReviewResult{
 		CritiqueText: "ok",
@@ -801,4 +805,29 @@ func TestRunNext_PlannerInjectedIntoRunnerDescription(t *testing.T) {
 	require.Equal(t, "planner", n.completed[0].Receipts[0].Persona)
 	require.Equal(t, "coder", n.completed[0].Receipts[1].Persona)
 	require.Equal(t, "reviewer", n.completed[0].Receipts[2].Persona)
+}
+
+func TestRunNext_ThreadsUserIDIntoSwarm(t *testing.T) {
+	ctx := context.Background()
+	fr := &fakeRunner{branch: "agent/1/ok", summary: "done", tokens: 10, costCents: 1}
+	q, _ := newRunQueue(t, fr)
+
+	stub := &stubSwarm{
+		planText:       "plan",
+		reviewDecision: swarm.DecisionApprove,
+	}
+	q.SetSwarm(stub)
+	q.SetUserID("user42")
+
+	n := &fakeNotifier{}
+	q.SetNotifier(n)
+
+	_, err := q.CreateTask(ctx, "implement login", "", "default")
+	require.NoError(t, err)
+
+	_, err = q.RunNext(ctx)
+	require.NoError(t, err)
+
+	require.Equal(t, "user42", stub.lastPlanArgs.UserID)
+	require.Equal(t, "user42", stub.lastReviewArgs.UserID)
 }
