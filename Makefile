@@ -42,6 +42,17 @@ sidecar-linux:
 docker-runner: runner-linux sidecar-linux
 	docker build -t era-runner:m2 -f docker/runner/Dockerfile .
 
+.PHONY: abigen
+abigen: ## Regenerate iNFT abigen bindings from contracts/out
+	@command -v jq >/dev/null || { echo "ERROR: jq not installed (brew install jq)"; exit 1; }
+	@command -v abigen >/dev/null || { echo "ERROR: abigen not installed (go install github.com/ethereum/go-ethereum/cmd/abigen@v1.17.2)"; exit 1; }
+	cd contracts && forge build
+	mkdir -p era-brain/inft/zg_7857/bindings
+	jq '.abi' contracts/out/EraPersonaINFT.sol/EraPersonaINFT.json > /tmp/era_inft.abi
+	abigen --abi /tmp/era_inft.abi --pkg bindings --type EraPersonaINFT \
+	  --out era-brain/inft/zg_7857/bindings/era_persona_inft.go
+	@echo "Bindings regenerated."
+
 VPS_HOST ?= era@178.105.44.3
 
 .PHONY: deploy
