@@ -14,6 +14,12 @@ contract EraPersonaINFT is ERC721, Ownable {
     uint256 private _nextTokenId;
     mapping(uint256 => string) private _tokenURIs;
 
+    /// @notice Emitted when an iNFT is invoked (per sealed-inference run).
+    /// @param tokenId The persona invoked.
+    /// @param receiptHash sha256 of the brain.Receipt (32 bytes).
+    /// @param ts block.timestamp at the time of recording.
+    event Invocation(uint256 indexed tokenId, bytes32 indexed receiptHash, uint256 indexed ts);
+
     constructor(address initialOwner) ERC721("Era Persona iNFT", "ERAINFT") Ownable(initialOwner) {}
 
     /// @notice Mint a new persona iNFT. Only contract owner.
@@ -34,5 +40,18 @@ contract EraPersonaINFT is ERC721, Ownable {
 
     function totalSupply() external view returns (uint256) {
         return _nextTokenId;
+    }
+
+    /// @notice Record a persona-invocation event on-chain. Callable by the
+    ///         contract owner OR the current token holder.
+    /// @param tokenId The persona invoked.
+    /// @param receiptHash sha256 of the run's Receipt struct.
+    function recordInvocation(uint256 tokenId, bytes32 receiptHash) external {
+        require(_ownerOf(tokenId) != address(0), "EraPersonaINFT: token does not exist");
+        require(
+            msg.sender == owner() || msg.sender == _ownerOf(tokenId),
+            "EraPersonaINFT: not authorized"
+        );
+        emit Invocation(tokenId, receiptHash, block.timestamp);
     }
 }

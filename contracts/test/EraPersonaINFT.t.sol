@@ -60,4 +60,61 @@ contract EraPersonaINFTTest is Test {
         assertEq(inft.balanceOf(holder), 1);
         assertEq(inft.balanceOf(owner), 0);
     }
+
+    // ---- recordInvocation tests (Phase 2) ----
+
+    function testRecordInvocationByOwner() public {
+        inft.mint(owner, "ipfs://planner.json"); // tokenId 0
+        bytes32 receiptHash = keccak256("a receipt");
+
+        vm.expectEmit(true, true, true, false); // topic1, topic2, topic3 indexed; data not asserted
+        emit EraPersonaINFT.Invocation(0, receiptHash, block.timestamp);
+
+        inft.recordInvocation(0, receiptHash);
+    }
+
+    function testRecordInvocationByTokenHolder() public {
+        inft.mint(holder, "ipfs://planner.json"); // tokenId 0, owner = holder
+        bytes32 receiptHash = keccak256("a receipt");
+
+        vm.prank(holder); // not contract owner, but token holder
+        vm.expectEmit(true, true, true, false);
+        emit EraPersonaINFT.Invocation(0, receiptHash, block.timestamp);
+
+        inft.recordInvocation(0, receiptHash);
+    }
+
+    function testRecordInvocationByStrangerReverts() public {
+        inft.mint(holder, "ipfs://planner.json"); // tokenId 0, owner = holder
+
+        vm.prank(stranger);
+        vm.expectRevert(bytes("EraPersonaINFT: not authorized"));
+        inft.recordInvocation(0, keccak256("a receipt"));
+    }
+
+    function testRecordInvocationForNonExistentTokenReverts() public {
+        vm.expectRevert(bytes("EraPersonaINFT: token does not exist"));
+        inft.recordInvocation(999, keccak256("a receipt"));
+    }
+
+    function testTransferUpdatesHolderACLForRecord() public {
+        // 1. mint to holder
+        inft.mint(holder, "ipfs://planner.json"); // tokenId 0
+
+        // 2. holder transfers to stranger
+        vm.prank(holder);
+        inft.safeTransferFrom(holder, stranger, 0);
+        assertEq(inft.ownerOf(0), stranger);
+
+        // 3. now stranger (new holder) can record; original holder cannot
+        vm.prank(stranger);
+        inft.recordInvocation(0, keccak256("post-transfer"));
+
+        vm.prank(holder);
+        vm.expectRevert(bytes("EraPersonaINFT: not authorized"));
+        inft.recordInvocation(0, keccak256("from previous holder"));
+
+        // 4. contract owner can still record (admin always wins)
+        inft.recordInvocation(0, keccak256("admin"));
+    }
 }
