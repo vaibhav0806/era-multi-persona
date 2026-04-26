@@ -2,6 +2,7 @@ package brain_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -95,18 +96,29 @@ func TestLLMPersona_Run_IncludesPriorOutputsInPrompt(t *testing.T) {
 		"reviewer prompt should include coder's output")
 }
 
-func TestLLMPersona_Run_AppendsReceiptToLog(t *testing.T) {
-	rec := &recordingLLM{resp: "x"}
+func TestLLMPersona_Run_AppendedReceiptHasCorrectFields(t *testing.T) {
+	rec := &recordingLLM{resp: "RESPONSE_TEXT"}
 	mem := newSpyMem()
 	p := brain.NewLLMPersona(brain.LLMPersonaConfig{
 		Name:         "planner",
-		SystemPrompt: "x",
-		Model:        "m",
+		SystemPrompt: "sys",
+		Model:        "test-m",
 		LLM:          rec,
 		Memory:       mem,
-		Now:          time.Now,
+		Now:          func() time.Time { return time.Unix(1700000000, 0) },
 	})
-	_, err := p.Run(context.Background(), brain.Input{TaskID: "t1"})
+	_, err := p.Run(context.Background(), brain.Input{TaskID: "t1", TaskDescription: "do thing"})
 	require.NoError(t, err)
-	require.Len(t, mem.logs["audit/t1"], 1, "one receipt log entry per persona run")
+	require.Len(t, mem.logs["audit/t1"], 1)
+
+	var got brain.Receipt
+	require.NoError(t, json.Unmarshal(mem.logs["audit/t1"][0], &got))
+	require.Equal(t, "planner", got.Persona)
+	require.Equal(t, "test-m", got.Model)
+	require.False(t, got.Sealed)
+	require.Equal(t, int64(1700000000), got.TimestampUnix)
+	require.Len(t, got.InputHash, 64, "InputHash should be sha256 hex (64 chars)")
+	require.Len(t, got.OutputHash, 64, "OutputHash should be sha256 hex (64 chars)")
+	require.Regexp(t, "^[0-9a-f]{64}$", got.InputHash)
+	require.Regexp(t, "^[0-9a-f]{64}$", got.OutputHash)
 }

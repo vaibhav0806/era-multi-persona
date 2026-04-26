@@ -74,10 +74,19 @@ func (p *LLMPersona) Run(ctx context.Context, in Input) (Output, error) {
 	if err != nil {
 		return Output{}, fmt.Errorf("llm complete: %w", err)
 	}
-	// Hash the *requested* model (cfg.Model, possibly empty) for receipt
-	// determinism. The upstream API may substitute a different model; we
-	// record what we asked for so receipts collide on identical requests.
-	inH := sha256Hex(p.cfg.SystemPrompt + "\x00" + user + "\x00" + p.cfg.Model)
+	// Length-prefixed encoding so embedded \x00 in any field can't produce
+	// a hash collision against a different decomposition. M7-D records this
+	// hash on-chain via INFTRegistry.RecordInvocation; do not change the
+	// canonical form without migrating recorded values.
+	// The hash commits to the requested (cfg.Model) so identical requests
+	// produce identical InputHash even when the upstream API substitutes a
+	// different model. The Receipt's Model field below records the actually-
+	// used model (resp.Model) to reflect what ran.
+	canon := fmt.Sprintf("%d\x00%s\x00%d\x00%s\x00%d\x00%s",
+		len(p.cfg.SystemPrompt), p.cfg.SystemPrompt,
+		len(user), user,
+		len(p.cfg.Model), p.cfg.Model)
+	inH := sha256Hex(canon)
 	outH := sha256Hex(resp.Text)
 	r := Receipt{
 		Persona:       p.cfg.Name,
