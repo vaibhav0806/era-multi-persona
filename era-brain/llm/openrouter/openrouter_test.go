@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/llm"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/openrouter"
@@ -16,15 +17,15 @@ import (
 
 func TestOpenRouter_Complete_HappyPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/api/v1/chat/completions", r.URL.Path)
-		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+		assert.Equal(t, "/api/v1/chat/completions", r.URL.Path)
+		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
 
 		body, _ := io.ReadAll(r.Body)
-		require.Contains(t, string(body), `"role":"system"`)
-		require.Contains(t, string(body), `"role":"user"`)
-		require.Contains(t, string(body), `"content":"sys-prompt"`)
-		require.Contains(t, string(body), `"content":"user-prompt"`)
-		require.Contains(t, string(body), `"model":"openai/gpt-4o-mini"`)
+		assert.Contains(t, string(body), `"role":"system"`)
+		assert.Contains(t, string(body), `"role":"user"`)
+		assert.Contains(t, string(body), `"content":"sys-prompt"`)
+		assert.Contains(t, string(body), `"content":"user-prompt"`)
+		assert.Contains(t, string(body), `"model":"openai/gpt-4o-mini"`)
 
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{
@@ -54,7 +55,7 @@ func TestOpenRouter_Complete_HappyPath(t *testing.T) {
 func TestOpenRouter_Complete_PerRequestModelOverride(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		require.Contains(t, string(body), `"model":"qwen/qwen3-30b"`)
+		assert.Contains(t, string(body), `"model":"qwen/qwen3-30b"`)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{"message": map[string]any{"content": "x"}}},
 			"model":   "qwen/qwen3-30b",

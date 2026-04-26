@@ -27,6 +27,8 @@ type Provider struct {
 	client *http.Client
 }
 
+var _ llm.Provider = (*Provider)(nil)
+
 // New constructs a Provider. Defaults BaseURL and HTTPTimeout if empty.
 func New(cfg Config) *Provider {
 	if cfg.BaseURL == "" {
@@ -88,7 +90,10 @@ func (p *Provider) Complete(ctx context.Context, req llm.Request) (llm.Response,
 		return llm.Response{}, fmt.Errorf("openrouter request: %w", err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return llm.Response{}, fmt.Errorf("openrouter read body: %w", err)
+	}
 
 	if resp.StatusCode >= 400 {
 		return llm.Response{}, fmt.Errorf("openrouter %d: %s", resp.StatusCode, string(respBody))
