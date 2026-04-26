@@ -54,7 +54,7 @@ contracts/
 - `totalSupply()` view for convenience.
 
 Deploy script flow (`forge script Deploy.s.sol --broadcast --rpc-url $PI_ZG_EVM_RPC --legacy`):
-1. Read `PI_ZG_PRIVATE_KEY` from env.
+1. Read `PI_ZG_PRIVATE_KEY` from env via `vm.envUint(...)`. (Confirmed: forge-std accepts `0x`-prefixed hex strings — the underlying revm parser handles both forms; no normalization needed.)
 2. Deploy `EraPersonaINFT(deployer)`.
 3. Mint planner → tokenId 0 → URI `https://raw.githubusercontent.com/vaibhav0806/era-multi-persona/master/contracts/metadata/planner.json`.
 4. Same for coder (1) and reviewer (2).
@@ -67,7 +67,7 @@ Deploy script flow (`forge script Deploy.s.sol --broadcast --rpc-url $PI_ZG_EVM_
 ```
 era-brain/inft/zg_7857/
 ├── zg_7857.go                   — Provider impl wrapping abigen bindings
-├── zg_7857_test.go              — unit tests via simulated.SimulatedBackend
+├── zg_7857_test.go              — unit tests via *simulated.Backend (constructed via simulated.NewBackend(alloc, opts...))
 ├── zg_7857_live_test.go         — //go:build zg_live — hits real testnet contract
 └── bindings/
     └── era_persona_inft.go      — abigen output (committed; regenerated via `make abigen`)
@@ -276,7 +276,7 @@ const (
 
 **Solidity (Foundry):** ~10 tests in `EraPersonaINFT.t.sol` covering mint, ACL, recordInvocation, transfer-then-record, event field correctness. Run via `forge test -vv`.
 
-**Go unit (era-brain/inft/zg_7857):** abigen bindings tested via go-ethereum's simulated chain (`github.com/ethereum/go-ethereum/ethclient/simulated.SimulatedBackend`). Deploy contract to sim chain, call `RecordInvocation`, assert event log shape. ~3 tests.
+**Go unit (era-brain/inft/zg_7857):** abigen bindings tested via go-ethereum's simulated chain (`github.com/ethereum/go-ethereum/ethclient/*simulated.Backend (constructed via simulated.NewBackend(alloc, opts...))`). Deploy contract to sim chain, call `RecordInvocation`, assert event log shape. ~3 tests.
 
 **Go live integration (build-tag `zg_live`):** hits real testnet contract. One test verifies a single `RecordInvocation` against a known tokenId, confirming tx mines. Cost ~0.0005 ZG per call.
 
@@ -311,8 +311,8 @@ const (
 
 | Phase | Tag | What |
 |---|---|---|
-| D.2.0 | `m7d2-0-abigen` | Generate `era-brain/inft/zg_7857/bindings/era_persona_inft.go` via `abigen --abi <forge out> --pkg bindings --out ...`. Commit. Add `make abigen` target. |
-| D.2.1 | `m7d2-1-provider` | TDD: `era-brain/inft/zg_7857/zg_7857.go` w/ `Provider` impl + `RecordInvocation`. 3 unit tests via `simulated.SimulatedBackend`. Build-tagged live test against real testnet. |
+| D.2.0 | `m7d2-0-abigen` | Generate `era-brain/inft/zg_7857/bindings/era_persona_inft.go` via abigen. Forge's `out/EraPersonaINFT.sol/EraPersonaINFT.json` is a combined artifact, so the `make abigen` target must extract the ABI first: `jq '.abi' contracts/out/EraPersonaINFT.sol/EraPersonaINFT.json > /tmp/era_inft.abi && abigen --abi /tmp/era_inft.abi --pkg bindings --type EraPersonaINFT --out era-brain/inft/zg_7857/bindings/era_persona_inft.go`. Commit the bindings file. |
+| D.2.1 | `m7d2-1-provider` | TDD: `era-brain/inft/zg_7857/zg_7857.go` w/ `Provider` impl + `RecordInvocation`. 3 unit tests via `*simulated.Backend (constructed via simulated.NewBackend(alloc, opts...))`. Build-tagged live test against real testnet. |
 | D.2.2 | `m7d2-2-queue-wiring` | era integration: `INFTProvider` interface in queue.go; `Queue.inft` + `SetINFT` setter; `RunNext` calls `RecordInvocation` after each persona LLM call. Cascade `stubINFT` in queue_run_test.go. |
 | D.2.3 | `m7d2-3-orchestrator-wiring` | `cmd/orchestrator/main.go` constructs `zg_7857.New(...)` when `PI_ZG_INFT_CONTRACT_ADDRESS` is set + calls `q.SetINFT(prov)`. Boot log confirms wiring. |
 | D.2.4 | `m7d2-done` | LIVE GATE: real Telegram `/task` produces 2 on-chain `Invocation` events (planner + reviewer; coder skipped per M7-C). `cast logs` filtering on contract addr shows the events. Tx hashes recorded. |
