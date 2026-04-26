@@ -65,6 +65,7 @@ type NeedsReviewArgs struct {
 	PRURL            string // was CompareURL; now PR html_url (or branch URL fallback when PR creation fails)
 	PlannerPlan      string
 	ReviewerCritique string
+	ReviewerDecision string // "approve" or "flag"
 	Receipts         []brain.Receipt // [planner, coder, reviewer] in order
 }
 
@@ -422,6 +423,7 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 				PRURL:            prURL,
 				PlannerPlan:      planText,
 				ReviewerCritique: reviewCritique,
+				ReviewerDecision: string(reviewDecision),
 				Receipts:         []brain.Receipt{plannerReceipt, synthCoderReceipt(), reviewerReceipt},
 			})
 		}
