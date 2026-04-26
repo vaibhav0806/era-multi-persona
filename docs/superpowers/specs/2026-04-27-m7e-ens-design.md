@@ -23,7 +23,7 @@ Time budget: ~2 days. Two phases anticipated (see §7).
 Three components, all on **Sepolia testnet** (separate from 0G Galileo where the iNFT contract lives):
 
 - **`era-brain/identity/ens/`** — Go client wrapping abigen bindings for ENS NameWrapper + PublicResolver. Provides `Provider` struct satisfying the existing `identity.Resolver` interface stub from M7-A.2. Hand-rolled abigen (no third-party deps), mirrors M7-D.2's `zg_7857` package shape.
-- **Orchestrator wiring** (`cmd/orchestrator/main.go`) — env-conditional `ensEnabled()` helper. On startup, if enabled, the orchestrator syncs the 3 subnames idempotently (read existing `inft_token_id` text record; skip writes if it already matches expected).
+- **Orchestrator wiring** (`cmd/orchestrator/main.go`) — env-conditional `ensEnabled()` helper. On startup, if enabled, the orchestrator syncs the 3 subnames idempotently — each `SetTextRecord` reads the on-chain value first and skips the tx when it already matches, so partial-write states reconcile on the next boot.
 - **Queue / Telegram glue** (`internal/queue/queue.go`) — at task complete, the queue's reviewer-DM path reads the 3 subnames' text records via Sepolia RPC and appends a "personas:" section. Read failures log a warning and skip the footer; the DM still sends.
 
 Networks are fully decoupled: Sepolia chain ID 11155111, RPC URL via `PI_ENS_RPC` env var; 0G Galileo (chain ID 16602, `PI_ZG_EVM_RPC`) untouched. The signing wallet is the **same private key** (`PI_ZG_PRIVATE_KEY`) used for iNFT — funded on both chains.
@@ -44,7 +44,7 @@ Pre-flight check before running orchestrator:
 ```bash
 cast call 0x0635513f179D50A207757E05759CbD106d7dFcE8 \
   'ownerOf(uint256)(address)' \
-  $(cast keccak vaibhav-era.eth) \
+  $(cast namehash vaibhav-era.eth) \
   --rpc-url $PI_ENS_RPC
 ```
 Must return the signer address. `0x0...0` means name not wrapped — wrap via ENS UI before proceeding.
@@ -288,6 +288,6 @@ Following the project's phased + tagged commit pattern. Each phase ends with `go
 3. **Live test gas budget exceeded** because of ENS contract overhead. Recovery: faucet up; faucet drips 0.05 ETH/day, far above any single test cost.
 4. **Idempotency check race** — boot N writes records, boot N+1 reads them but RPC returns stale. Recovery: poll RPC for confirmation after boot N's writes (1-block wait); not needed in practice given 12s Sepolia block time + boot-not-immediately-followed-by-restart pattern.
 5. **DM rendering becomes too slow** if Sepolia RPC is laggy. Recovery: 5s timeout on each `ReadTextRecord` call in DM path; on timeout, skip footer.
-6. **Parent name not actually owned/wrapped by signer wallet.** #1 way the live gate fails. Pre-flight check (mandatory before live gate): `cast call $NAMEWRAPPER 'ownerOf(uint256)(address)' $(cast keccak vaibhav-era.eth) --rpc-url $PI_ENS_RPC` must return signer address. Returning `0x0...0` means name not wrapped — wrap via ENS UI before proceeding.
+6. **Parent name not actually owned/wrapped by signer wallet.** #1 way the live gate fails. Pre-flight check (mandatory before live gate): `cast call $NAMEWRAPPER 'ownerOf(uint256)(address)' $(cast namehash vaibhav-era.eth) --rpc-url $PI_ENS_RPC` must return signer address. Returning `0x0...0` means name not wrapped — wrap via ENS UI before proceeding.
 7. **Hardcoded PublicResolver address bypasses `ENS.resolver(node)` lookup.** If PublicResolver is redeployed on Sepolia (unlikely but possible) or someone unwraps/rewraps a subname pointing at a different resolver, reads return empty silently. Recovery: update constant in `ens.go` (one-line change) and rebuild.
 8. **Sepolia chain reorgs / `WaitMined` flakiness.** Public Sepolia RPCs occasionally drop pending txs. Recovery: retry once with same nonce; if still fails, surface as per-label warn (idempotency reconciles next boot).
