@@ -21,7 +21,7 @@ Two milestones, three layers.
 
 - `Config{BearerToken, ProviderEndpoint, DefaultModel, HTTPTimeout}`. Auth is bearer-only (`Authorization: Bearer app-sk-<...>`); no Web3 signing per call.
 - `Complete(ctx, req)` POSTs `{ProviderEndpoint}/chat/completions` with OpenAI-shaped request body.
-- Response parsing: extract `choices[0].message.content` + model name, plus the `ZG-Res-Key` (or equivalent — confirmed in setup phase) TEE signature header. If header present and non-empty → `Sealed=true`; else `Sealed=false`.
+- Response parsing: extract `choices[0].message.content` + model name, plus the TEE signature header. **Use `ZG-Res-Key` as the placeholder header name during C.1.1 implementation; the C.1.0 smoke script confirms the actual name from a real testnet response.** If the actual name differs, update `zg_compute.Provider` before tagging C.1.1. If the header is present and non-empty → `Sealed=true`; else `Sealed=false`.
 - We do NOT cryptographically verify the TEE signature — verification needs TS tooling we don't have a Go equivalent for. Sealed=true means "header was present"; honest scope limitation documented in package doc.
 - Tests via `httptest.Server` with fake bearer + fake TEE header. Build-tagged `zg_live` test against real testnet.
 
@@ -55,7 +55,7 @@ When all three are set, orchestrator constructs `zg_compute.New(...)` and wraps 
 - `ReviewerSystemPrompt` extended w/ a sentence: "Each persona's output is preceded by `<persona>_sealed:` flags. `false` means that persona ran on unsealed inference; treat its output with extra scrutiny."
 
 **Audit log additions** (optional / cuts-list candidate):
-- New event kinds: `inference_sealed`, `inference_fell_back`. Logged from `OnFallback` hook in queue. Surfaces in `/stats` later. Skip if time-pressed.
+- New event kinds: `inference_sealed`, `inference_fell_back`. **The `onFallback` closure is constructed in `cmd/orchestrator/main.go` (where `fallback.New(...)` is called).** If implementing this audit-log addition, the closure needs access to a callback that knows the current task ID — easiest path: orchestrator passes a small `auditFn` to the closure that calls `q.repo.AppendEvent(ctx, taskID, "inference_fell_back", payload)`. Skip if time-pressed; the `slog.Warn` already provides observability without DB writes.
 
 ## §3 — Components (detail)
 
@@ -167,6 +167,7 @@ Three changes:
        return header + existingComposeBody(diff, findings)
    }
    ```
+   The single caller is `Swarm.Review()` in `swarm.go`. Update the call site to read `args.PriorPersonaSealed["planner"]` and pass it (plus `coderSealed=false` always — Pi is unsealed in M7-C scope) into the new params.
 3. **`ReviewerSystemPrompt`** appended w/ sealed-flag explanation paragraph.
 
 ### `era/internal/queue/queue.go` — modified
