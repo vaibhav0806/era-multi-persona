@@ -100,3 +100,24 @@ func TestSwarm_InjectPlan_NoPlanReturnsTaskAsIs(t *testing.T) {
 	out := swarm.InjectPlan("just the task", "")
 	require.Equal(t, "just the task", out)
 }
+
+func TestSwarm_Review_TruncatesLargeDiff(t *testing.T) {
+	// A 200k-char diff (much larger than the 30k cap) must not produce a
+	// reviewer prompt that blows past the 128k-token model context window.
+	// The reviewer's fakeLLM captures lastReq.UserPrompt; assert it stays
+	// bounded and that a "diff truncated" marker is present.
+	plannerLLM := &fakeLLM{resp: "plan"}
+	bigDiff := strings.Repeat("x", 200_000)
+	rec := &fakeLLM{resp: "no issues found\nDECISION: approve"}
+	s := swarm.New(swarm.Config{PlannerLLM: plannerLLM, ReviewerLLM: rec})
+
+	_, err := s.Review(context.Background(), swarm.ReviewArgs{
+		TaskID:   "t1",
+		PlanText: "plan",
+		DiffText: bigDiff,
+	})
+	require.NoError(t, err)
+	require.Less(t, len(rec.lastReq.UserPrompt), 50_000,
+		"reviewer prompt should be bounded; got %d chars", len(rec.lastReq.UserPrompt))
+	require.Contains(t, rec.lastReq.UserPrompt, "diff truncated")
+}

@@ -125,7 +125,19 @@ func (s *Swarm) Review(ctx context.Context, args ReviewArgs) (ReviewResult, erro
 	}, nil
 }
 
+// maxDiffChars caps the diff text fed to the reviewer. Big diffs (lockfile
+// regenerations, large refactors) can blow past gpt-4o-mini's 128k context
+// window — observed at 200k tokens in M7-B.2's live gate. The reviewer
+// only needs enough context to spot test removals + plan deviations; the
+// first ~7.5k tokens of diff are usually sufficient. Tune up if reviewer
+// quality degrades.
+const maxDiffChars = 30000
+
 func composeCoderOutput(diff string, findings []string) string {
+	if len(diff) > maxDiffChars {
+		original := len(diff)
+		diff = diff[:maxDiffChars] + fmt.Sprintf("\n[... diff truncated, original was %d chars ...]", original)
+	}
 	out := "Diff:\n" + diff
 	if len(findings) > 0 {
 		out += "\n\nDiff-scan findings:\n"
