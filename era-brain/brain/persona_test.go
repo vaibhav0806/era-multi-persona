@@ -122,3 +122,99 @@ func TestLLMPersona_Run_AppendedReceiptHasCorrectFields(t *testing.T) {
 	require.Regexp(t, "^[0-9a-f]{64}$", got.InputHash)
 	require.Regexp(t, "^[0-9a-f]{64}$", got.OutputHash)
 }
+
+func TestLLMPersona_Run_ReadsMemoryAndPrependsObservationsBlock(t *testing.T) {
+	rec := &recordingLLM{resp: "ok"}
+	mem := newSpyMem()
+	// Pre-seed memory with a blob containing 2 observations.
+	priorBlob := []byte(`{"v":1,"observations":["task: prior1 | plan: step a","task: prior2 | plan: step b"]}`)
+	require.NoError(t, mem.PutKV(context.Background(), "planner-mem", "user42", priorBlob))
+
+	p := brain.NewLLMPersona(brain.LLMPersonaConfig{
+		Name:            "planner",
+		SystemPrompt:    "you are planner",
+		Model:           "test-m",
+		LLM:             rec,
+		Memory:          mem,
+		Now:             time.Now,
+		MemoryShaper:    brain.BareHistoryShaper(200),
+		MemoryNamespace: "planner-mem",
+	})
+
+	_, err := p.Run(context.Background(), brain.Input{
+		TaskID:          "t1",
+		UserID:          "user42",
+		TaskDescription: "current task",
+	})
+	require.NoError(t, err)
+	require.Contains(t, rec.lastReq.UserPrompt, "## Prior observations")
+	require.Contains(t, rec.lastReq.UserPrompt, "task: prior1 | plan: step a")
+	require.Contains(t, rec.lastReq.UserPrompt, "task: prior2 | plan: step b")
+	require.Contains(t, rec.lastReq.UserPrompt, "current task")
+	// Observations block should appear BEFORE the Task: line.
+	obsIdx := strings.Index(rec.lastReq.UserPrompt, "## Prior observations")
+	taskIdx := strings.Index(rec.lastReq.UserPrompt, "Task: current task")
+	require.True(t, obsIdx < taskIdx, "observations should precede task line")
+}
+
+func TestLLMPersona_Run_NoShaperMeansNoMemoryRead(t *testing.T) {
+	rec := &recordingLLM{resp: "ok"}
+	mem := newSpyMem()
+	require.NoError(t, mem.PutKV(context.Background(), "planner-mem", "user42", []byte(`{"v":1,"observations":["should not appear"]}`)))
+
+	p := brain.NewLLMPersona(brain.LLMPersonaConfig{
+		Name: "planner", SystemPrompt: "x", Model: "m", LLM: rec, Memory: mem, Now: time.Now,
+		// MemoryShaper omitted → no read.
+	})
+	_, err := p.Run(context.Background(), brain.Input{TaskID: "t1", UserID: "user42", TaskDescription: "t"})
+	require.NoError(t, err)
+	require.NotContains(t, rec.lastReq.UserPrompt, "should not appear")
+	require.NotContains(t, rec.lastReq.UserPrompt, "## Prior observations")
+}
+
+func TestLLMPersona_Run_NotFoundMeansEmptyObservationsNoBlock(t *testing.T) {
+	// First-task-ever case: KV is cold. No observations block in prompt; no warn fired.
+	rec := &recordingLLM{resp: "ok"}
+	mem := newSpyMem()
+	p := brain.NewLLMPersona(brain.LLMPersonaConfig{
+		Name: "planner", SystemPrompt: "x", Model: "m", LLM: rec, Memory: mem, Now: time.Now,
+		MemoryShaper:    brain.BareHistoryShaper(200),
+		MemoryNamespace: "planner-mem",
+	})
+	_, err := p.Run(context.Background(), brain.Input{TaskID: "t1", UserID: "newuser", TaskDescription: "first task"})
+	require.NoError(t, err)
+	require.NotContains(t, rec.lastReq.UserPrompt, "## Prior observations")
+	require.Contains(t, rec.lastReq.UserPrompt, "first task")
+}
+
+func TestLLMPersona_Run_MalformedBlobRunsBlind(t *testing.T) {
+	rec := &recordingLLM{resp: "ok"}
+	mem := newSpyMem()
+	require.NoError(t, mem.PutKV(context.Background(), "planner-mem", "user42", []byte(`not valid json`)))
+
+	p := brain.NewLLMPersona(brain.LLMPersonaConfig{
+		Name: "planner", SystemPrompt: "x", Model: "m", LLM: rec, Memory: mem, Now: time.Now,
+		MemoryShaper:    brain.BareHistoryShaper(200),
+		MemoryNamespace: "planner-mem",
+	})
+	_, err := p.Run(context.Background(), brain.Input{TaskID: "t1", UserID: "user42", TaskDescription: "t"})
+	require.NoError(t, err, "malformed blob should not fail the task")
+	require.NotContains(t, rec.lastReq.UserPrompt, "## Prior observations",
+		"malformed → run blind → no block")
+}
+
+func TestLLMPersona_Run_NoUserIDMeansNoMemoryRead(t *testing.T) {
+	// Defensive: even if shaper is set, no UserID means we have no key to read against.
+	rec := &recordingLLM{resp: "ok"}
+	mem := newSpyMem()
+	require.NoError(t, mem.PutKV(context.Background(), "planner-mem", "", []byte(`{"v":1,"observations":["should not appear"]}`)))
+
+	p := brain.NewLLMPersona(brain.LLMPersonaConfig{
+		Name: "planner", SystemPrompt: "x", Model: "m", LLM: rec, Memory: mem, Now: time.Now,
+		MemoryShaper:    brain.BareHistoryShaper(200),
+		MemoryNamespace: "planner-mem",
+	})
+	_, err := p.Run(context.Background(), brain.Input{TaskID: "t1", UserID: "", TaskDescription: "t"})
+	require.NoError(t, err)
+	require.NotContains(t, rec.lastReq.UserPrompt, "should not appear")
+}

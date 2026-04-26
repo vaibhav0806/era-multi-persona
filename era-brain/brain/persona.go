@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -44,6 +46,11 @@ type LLMPersonaConfig struct {
 	LLM          llm.Provider
 	Memory       memory.Provider // used for audit-log writes; KV reads land in M7-B
 	Now          func() time.Time
+
+	// NEW (M7-B.3):
+	MemoryShaper    MemoryShaper // optional; nil = no evolving-memory read/write
+	MemoryNamespace string       // KV namespace for the persona's blob; required when MemoryShaper set
+	MaxObservations int          // rolling buffer cap; defaults to 10
 }
 
 // LLMPersona is the standard Persona impl: builds a prompt from config +
@@ -64,8 +71,63 @@ func NewLLMPersona(cfg LLMPersonaConfig) *LLMPersona {
 
 func (p *LLMPersona) Name() string { return p.cfg.Name }
 
+const defaultMaxObservations = 10
+
+// memoryBlob is the JSON shape stored under (MemoryNamespace, UserID).
+// v=1 for forward compat (M7-D may add fields).
+type memoryBlob struct {
+	V            int      `json:"v"`
+	Observations []string `json:"observations"`
+}
+
+// readPriorObservations fetches and decodes the persona's prior-observations
+// blob. Returns the observations slice (possibly empty). Errors are non-fatal:
+// ErrNotFound (cold start) is silent; other errors warn and return empty.
+func (p *LLMPersona) readPriorObservations(ctx context.Context, userID string) []string {
+	if p.cfg.MemoryShaper == nil || p.cfg.Memory == nil || userID == "" || p.cfg.MemoryNamespace == "" {
+		return nil
+	}
+	raw, err := p.cfg.Memory.GetKV(ctx, p.cfg.MemoryNamespace, userID)
+	if errors.Is(err, memory.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		slog.Warn("persona memory read failed",
+			"persona", p.cfg.Name, "ns", p.cfg.MemoryNamespace, "err", err)
+		return nil
+	}
+	var blob memoryBlob
+	if jerr := json.Unmarshal(raw, &blob); jerr != nil {
+		slog.Warn("persona memory blob malformed; running blind",
+			"persona", p.cfg.Name, "ns", p.cfg.MemoryNamespace, "err", jerr)
+		return nil
+	}
+	return blob.Observations
+}
+
+// renderObservationsBlock formats observations as the prompt-injection block.
+// Returns "" if no observations (no block emitted).
+func renderObservationsBlock(obs []string) string {
+	if len(obs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Prior observations\n")
+	for _, o := range obs {
+		b.WriteString("- ")
+		b.WriteString(o)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
 func (p *LLMPersona) Run(ctx context.Context, in Input) (Output, error) {
-	user := buildUserPrompt(in)
+	// NEW: read prior observations + build prompt prefix.
+	prior := p.readPriorObservations(ctx, in.UserID)
+	obsBlock := renderObservationsBlock(prior)
+
+	user := obsBlock + buildUserPrompt(in)
 	resp, err := p.cfg.LLM.Complete(ctx, llm.Request{
 		SystemPrompt: p.cfg.SystemPrompt,
 		UserPrompt:   user,
