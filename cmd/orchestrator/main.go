@@ -214,22 +214,33 @@ type tgNotifier struct {
 }
 
 func (n *tgNotifier) NotifyCompleted(ctx context.Context, a queue.CompletedArgs) {
-	repo := a.Repo
-	if repo == "" {
-		repo = n.sandboxRepo
+	body := fmt.Sprintf("✅ task #%d completed", a.TaskID)
+	if a.Repo != "" {
+		body += "\nrepo: " + a.Repo
 	}
-	_ = repo // used for fallback only; future Task 5 will render per-persona breakdown
-	var msg string
-	if a.Branch == "" {
-		msg = fmt.Sprintf("task #%d: no changes\nsummary: %s\ntokens: %d  cost: $%.2f",
-			a.TaskID, truncateForTelegram(a.Summary, 3500), a.Tokens, float64(a.CostCents)/100.0)
-	} else {
-		msg = fmt.Sprintf(
-			"task #%d completed\nbranch: %s\n%s\nsummary: %s\ntokens: %d  cost: $%.2f",
-			a.TaskID, a.Branch, a.PRURL, truncateForTelegram(a.Summary, 3500), a.Tokens, float64(a.CostCents)/100.0,
-		)
+	if a.Branch != "" {
+		body += "\nbranch: " + a.Branch
 	}
-	msgID, err := n.client.SendMessage(ctx, n.chatID, msg)
+	if a.PRURL != "" {
+		body += "\npr: " + a.PRURL
+	}
+	if a.Summary != "" {
+		body += "\n\n" + queue.Truncate(a.Summary, 1500)
+	}
+	body += fmt.Sprintf("\n\ntokens: %d · cost: $%.4f", a.Tokens, float64(a.CostCents)/100)
+
+	if a.PlannerPlan != "" {
+		body += "\n\n— planner: " + queue.Truncate(a.PlannerPlan, 200)
+	}
+	if a.ReviewerDecision != "" {
+		rev := "— reviewer: " + a.ReviewerDecision
+		if a.ReviewerCritique != "" {
+			rev += " — " + queue.Truncate(a.ReviewerCritique, 200)
+		}
+		body += "\n" + rev
+	}
+
+	msgID, err := n.client.SendMessage(ctx, n.chatID, body)
 	if err != nil {
 		slog.Error("notify completed", "err", err, "task", a.TaskID)
 		return
@@ -311,6 +322,18 @@ func formatNeedsReviewMessage(a queue.NeedsReviewArgs) string {
 	b.WriteString("diff preview:\n")
 	diffPreview := buildDiffPreview(a.Diffs, telegramMaxChars-b.Len()-200)
 	b.WriteString(diffPreview)
+
+	if a.PlannerPlan != "" {
+		fmt.Fprintf(&b, "\n— planner: %s", queue.Truncate(a.PlannerPlan, 200))
+	}
+	if a.ReviewerDecision != "" {
+		rev := "— reviewer: " + a.ReviewerDecision
+		if a.ReviewerCritique != "" {
+			rev += " — " + queue.Truncate(a.ReviewerCritique, 200)
+		}
+		fmt.Fprintf(&b, "\n%s", rev)
+	}
+
 	return b.String()
 }
 
