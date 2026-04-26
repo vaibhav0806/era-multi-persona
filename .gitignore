@@ -3,6 +3,7 @@
 /orchestrator
 /runner
 /sidecar
+/zg-smoke
 
 # Local env
 .env

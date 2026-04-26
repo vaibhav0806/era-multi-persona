@@ -1,3 +1,8 @@
 *.test
 *.out
 coverage.txt
+
+# Stray example binaries from `go build ./examples/...`
+/coding-agent
+/audit-agent
+/chat-agent
