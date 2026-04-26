@@ -21,7 +21,10 @@ import (
 	"github.com/vaibhav0806/era-multi-persona/era-brain/memory/dual"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/memory/zg_kv"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/memory/zg_log"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/llm"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/fallback"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/openrouter"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/zg_compute"
 	"github.com/vaibhav0806/era/internal/config"
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
@@ -112,8 +115,8 @@ func main() {
 	// Task 3: wire era-brain swarm (planner + reviewer personas).
 	plannerModel := envOrDefault("PI_BRAIN_PLANNER_MODEL", "openai/gpt-4o-mini")
 	reviewerModel := envOrDefault("PI_BRAIN_REVIEWER_MODEL", "openai/gpt-4o-mini")
-	plannerLLM := openrouter.New(openrouter.Config{APIKey: cfg.OpenRouterAPIKey, DefaultModel: plannerModel})
-	reviewerLLM := openrouter.New(openrouter.Config{APIKey: cfg.OpenRouterAPIKey, DefaultModel: reviewerModel})
+	plannerOR := openrouter.New(openrouter.Config{APIKey: cfg.OpenRouterAPIKey, DefaultModel: plannerModel})
+	reviewerOR := openrouter.New(openrouter.Config{APIKey: cfg.OpenRouterAPIKey, DefaultModel: reviewerModel})
 	brainDBPath := filepath.Join(filepath.Dir(cfg.DBPath), "era-brain.db")
 	brainMem, err := brainsqlite.Open(brainDBPath)
 	if err != nil {
@@ -146,6 +149,28 @@ func main() {
 		slog.Info("0G storage wired",
 			"indexer", os.Getenv("PI_ZG_INDEXER_RPC"),
 			"kv_node_set", os.Getenv("PI_ZG_KV_NODE") != "")
+	}
+
+	// Build the LLM providers passed to swarm. Default = OpenRouter alone (M7-B.3 baseline).
+	// If 0G Compute env vars are present, wrap each persona's LLM with fallback so
+	// inference tries 0G Compute first, falls back to OpenRouter on error.
+	var plannerLLM llm.Provider = plannerOR
+	var reviewerLLM llm.Provider = reviewerOR
+
+	if zgComputeEnabled() {
+		zgModel := envOrDefault("PI_ZG_COMPUTE_MODEL", "qwen/qwen-2.5-7b-instruct")
+		zgComp := zg_compute.New(zg_compute.Config{
+			BearerToken:      os.Getenv("PI_ZG_COMPUTE_BEARER"),
+			ProviderEndpoint: os.Getenv("PI_ZG_COMPUTE_ENDPOINT"),
+			DefaultModel:     zgModel,
+		})
+		plannerLLM = fallback.New(zgComp, plannerOR, func(err error) {
+			slog.Warn("planner sealed inference fell back to openrouter", "err", err)
+		})
+		reviewerLLM = fallback.New(zgComp, reviewerOR, func(err error) {
+			slog.Warn("reviewer sealed inference fell back to openrouter", "err", err)
+		})
+		slog.Info("0G Compute sealed inference wired", "model", zgModel)
 	}
 
 	sw := swarm.New(swarm.Config{
@@ -438,6 +463,13 @@ func zgEnabled() bool {
 	return os.Getenv("PI_ZG_PRIVATE_KEY") != "" &&
 		os.Getenv("PI_ZG_EVM_RPC") != "" &&
 		os.Getenv("PI_ZG_INDEXER_RPC") != ""
+}
+
+// zgComputeEnabled returns true when all required 0G Compute env vars are present.
+// PI_ZG_COMPUTE_MODEL is optional (defaults to qwen/qwen-2.5-7b-instruct).
+func zgComputeEnabled() bool {
+	return os.Getenv("PI_ZG_COMPUTE_ENDPOINT") != "" &&
+		os.Getenv("PI_ZG_COMPUTE_BEARER") != ""
 }
 
 // zgComposite combines zg_kv (KV ops) and zg_log (Log ops) into a single
