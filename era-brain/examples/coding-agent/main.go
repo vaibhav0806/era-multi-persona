@@ -22,7 +22,10 @@ import (
 	"time"
 
 	"github.com/vaibhav0806/era-multi-persona/era-brain/brain"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/llm"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/fallback"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/openrouter"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/zg_compute"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/memory"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/memory/dual"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/memory/sqlite"
@@ -34,6 +37,7 @@ func main() {
 	task := flag.String("task", "", "task description (required)")
 	model := flag.String("model", "openai/gpt-4o-mini", "OpenRouter model id")
 	zgLive := flag.Bool("zg-live", false, "use 0G testnet alongside SQLite (requires PI_ZG_* env vars)")
+	zgCompute := flag.Bool("zg-compute", false, "use 0G Compute sealed inference w/ OpenRouter fallback (requires PI_ZG_COMPUTE_* env vars)")
 	flag.Parse()
 	if *task == "" {
 		log.Fatal("--task is required")
@@ -82,10 +86,27 @@ func main() {
 		})
 	}
 
-	llmProv := openrouter.New(openrouter.Config{
+	var llmProv llm.Provider = openrouter.New(openrouter.Config{
 		APIKey:       apiKey,
 		DefaultModel: *model,
 	})
+
+	if *zgCompute {
+		zgEndpoint := os.Getenv("PI_ZG_COMPUTE_ENDPOINT")
+		zgBearer := os.Getenv("PI_ZG_COMPUTE_BEARER")
+		zgModel := os.Getenv("PI_ZG_COMPUTE_MODEL")
+		if zgEndpoint == "" || zgBearer == "" || zgModel == "" {
+			log.Fatal("--zg-compute set but PI_ZG_COMPUTE_ENDPOINT/BEARER/MODEL missing")
+		}
+		zgComp := zg_compute.New(zg_compute.Config{
+			BearerToken:      zgBearer,
+			ProviderEndpoint: zgEndpoint,
+			DefaultModel:     zgModel,
+		})
+		llmProv = fallback.New(zgComp, llmProv, func(err error) {
+			fmt.Fprintf(os.Stderr, "[zg_compute fell back to openrouter: %v]\n", err)
+		})
+	}
 
 	personas := []brain.Persona{
 		brain.NewLLMPersona(brain.LLMPersonaConfig{
