@@ -39,9 +39,14 @@ func Open(path string) (*Provider, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	// SQLite serializes writes through a single connection lock; cap pool to 1
+	// so the database/sql layer queues writes instead of racing on SQLITE_BUSY.
+	// This satisfies memory.Provider's "safe for concurrent use" contract.
+	db.SetMaxOpenConns(1)
 	return &Provider{db: db}, nil
 }
 
+// Close closes the underlying database.
 func (p *Provider) Close() error { return p.db.Close() }
 
 func (p *Provider) GetKV(ctx context.Context, ns, key string) ([]byte, error) {
@@ -58,6 +63,9 @@ func (p *Provider) GetKV(ctx context.Context, ns, key string) ([]byte, error) {
 	return val, nil
 }
 
+// PutKV inserts a new row; GetKV reads the latest by seq.
+// Row count grows without bound — acceptable for reference impl at era-brain scale.
+// The 0G KV impl (M7-B) will use native upsert and will not need this seq-scan pattern.
 func (p *Provider) PutKV(ctx context.Context, ns, key string, val []byte) error {
 	if _, err := p.db.ExecContext(ctx,
 		`INSERT INTO entries(namespace, key, val, is_kv) VALUES(?,?,?,1)`,
@@ -68,6 +76,9 @@ func (p *Provider) PutKV(ctx context.Context, ns, key string, val []byte) error 
 }
 
 func (p *Provider) AppendLog(ctx context.Context, ns string, entry []byte) error {
+	// key is intentionally empty for log entries; the is_kv flag separates rows
+	// at query time, but the empty key keeps Log entries from accidentally
+	// matching a real KV (key, ns) pair.
 	if _, err := p.db.ExecContext(ctx,
 		`INSERT INTO entries(namespace, key, val, is_kv) VALUES(?,'',?,0)`,
 		ns, entry); err != nil {
@@ -83,7 +94,7 @@ func (p *Provider) ReadLog(ctx context.Context, ns string) ([][]byte, error) {
 		return nil, fmt.Errorf("readlog: %w", err)
 	}
 	defer rows.Close()
-	var out [][]byte
+	out := make([][]byte, 0)
 	for rows.Next() {
 		var v []byte
 		if err := rows.Scan(&v); err != nil {

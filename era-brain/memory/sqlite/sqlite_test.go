@@ -2,7 +2,9 @@ package sqlite_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -78,4 +80,29 @@ func TestSQLite_KVAndLog_DontInterfere(t *testing.T) {
 	entries, err := p.ReadLog(ctx, "ns")
 	require.NoError(t, err)
 	require.Equal(t, [][]byte{[]byte("log-val")}, entries)
+}
+
+func TestSQLite_KV_ConcurrentPutNoErrors(t *testing.T) {
+	p := newProvider(t)
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		i := i
+		go func() {
+			defer wg.Done()
+			require.NoError(t, p.PutKV(ctx, "ns", "k", []byte(fmt.Sprintf("v%d", i))))
+		}()
+	}
+	wg.Wait()
+	_, err := p.GetKV(ctx, "ns", "k")
+	require.NoError(t, err)
+}
+
+func TestSQLite_Log_ReadEmptyNamespaceReturnsEmpty(t *testing.T) {
+	p := newProvider(t)
+	got, err := p.ReadLog(context.Background(), "never-written")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Empty(t, got)
 }
