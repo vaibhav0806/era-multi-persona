@@ -745,6 +745,7 @@ func TestQueue_RunNext_FiresProgress(t *testing.T) {
 type stubSwarm struct {
 	plannedDesc    string
 	planText       string
+	plannerSealed  bool // NEW (M7-C.2): set Receipt.Sealed in Plan()
 	reviewedDiff   string
 	reviewDecision swarm.Decision
 	lastPlanArgs   swarm.PlanArgs
@@ -756,7 +757,7 @@ func (s *stubSwarm) Plan(_ context.Context, args swarm.PlanArgs) (swarm.PlanResu
 	s.plannedDesc = args.TaskDescription
 	return swarm.PlanResult{
 		PlanText: s.planText,
-		Receipt:  brain.Receipt{Persona: "planner", Model: "stub"},
+		Receipt:  brain.Receipt{Persona: "planner", Model: "stub", Sealed: s.plannerSealed},
 	}, nil
 }
 
@@ -830,4 +831,56 @@ func TestRunNext_ThreadsUserIDIntoSwarm(t *testing.T) {
 
 	require.Equal(t, "user42", stub.lastPlanArgs.UserID)
 	require.Equal(t, "user42", stub.lastReviewArgs.UserID)
+}
+
+func TestRunNext_PassesPlannerSealedToReviewer(t *testing.T) {
+	ctx := context.Background()
+	fr := &fakeRunner{branch: "agent/1/ok", summary: "done", tokens: 10, costCents: 1}
+	q, repo := newRunQueue(t, fr)
+
+	stub := &stubSwarm{
+		planText:       "1. step",
+		plannerSealed:  true, // simulate sealed inference returned by zg_compute
+		reviewDecision: swarm.DecisionApprove,
+	}
+	q.SetSwarm(stub)
+	q.SetUserID("u")
+
+	n := &fakeNotifier{}
+	q.SetNotifier(n)
+
+	_, err := repo.CreateTask(ctx, "do thing", "owner/repo", "default")
+	require.NoError(t, err)
+
+	processed, err := q.RunNext(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+
+	require.NotNil(t, stub.lastReviewArgs.PriorPersonaSealed)
+	require.True(t, stub.lastReviewArgs.PriorPersonaSealed["planner"],
+		"planner's Sealed flag should propagate to reviewer args")
+	require.False(t, stub.lastReviewArgs.PriorPersonaSealed["coder"],
+		"coder is always unsealed (Pi-in-Docker) per M7-C scope")
+}
+
+func TestRunNext_PassesUnsealedPlannerToReviewer(t *testing.T) {
+	ctx := context.Background()
+	fr := &fakeRunner{branch: "agent/1/ok", summary: "done", tokens: 10, costCents: 1}
+	q, repo := newRunQueue(t, fr)
+
+	stub := &stubSwarm{
+		planText:       "1. step",
+		plannerSealed:  false, // simulate fallback fired
+		reviewDecision: swarm.DecisionApprove,
+	}
+	q.SetSwarm(stub)
+	q.SetUserID("u")
+
+	_, err := repo.CreateTask(ctx, "do thing", "owner/repo", "default")
+	require.NoError(t, err)
+
+	_, err = q.RunNext(ctx)
+	require.NoError(t, err)
+
+	require.False(t, stub.lastReviewArgs.PriorPersonaSealed["planner"])
 }

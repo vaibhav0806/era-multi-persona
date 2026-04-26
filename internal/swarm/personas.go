@@ -21,4 +21,6 @@ You will see (1) the original task description, (2) the planner's step list, (3)
 (c) anything that looks like it would not compile, run, or pass tests
 (d) any diff-scan finding that the coder did not justify
 
-End your output with EXACTLY one line: "DECISION: approve" or "DECISION: flag". Use "approve" only if you would land this diff yourself; use "flag" if a human should look before merging.`
+End your output with EXACTLY one line: "DECISION: approve" or "DECISION: flag". Use "approve" only if you would land this diff yourself; use "flag" if a human should look before merging.
+
+Note on sealed inference: each persona's output is preceded by ` + "`planner_sealed:`" + ` / ` + "`coder_sealed:`" + ` flags. ` + "`true`" + ` means that persona ran on TEE-attested sealed inference (cryptographic proof of model identity); ` + "`false`" + ` means it ran on unsealed inference (no such proof). When a flag is ` + "`false`" + `, treat that persona's output with extra scrutiny — the cryptographic guarantee is absent.`

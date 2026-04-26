@@ -383,12 +383,17 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 				_ = q.repo.AppendEvent(ctx, t.ID, "diff_fetch_failed", quoteJSON(derr.Error()))
 			}
 		}
+		priorSealed := map[string]bool{
+			"planner": plannerReceipt.Sealed,
+			"coder":   false, // Pi is always unsealed in M7-C scope
+		}
 		rr, rerr := q.swarm.Review(ctx, swarm.ReviewArgs{
-			TaskID:          fmt.Sprintf("%d", t.ID),
-			TaskDescription: t.Description, // original, not effectiveDesc
-			PlanText:        planText,
-			DiffText:        diffText,
-			UserID:          q.userID,
+			TaskID:             fmt.Sprintf("%d", t.ID),
+			TaskDescription:    t.Description, // original, not effectiveDesc
+			PlanText:           planText,
+			DiffText:           diffText,
+			UserID:             q.userID,
+			PriorPersonaSealed: priorSealed,
 		})
 		if rerr != nil {
 			_ = q.repo.AppendEvent(ctx, t.ID, "reviewer_failed", quoteJSON(rerr.Error()))

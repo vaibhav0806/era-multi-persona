@@ -92,12 +92,13 @@ const (
 
 // ReviewArgs is the input to Review.
 type ReviewArgs struct {
-	TaskID           string
-	UserID           string
-	TaskDescription  string
-	PlanText         string
-	DiffText         string
-	DiffScanFindings []string // human-readable rule names; e.g. ["removed_test (foo_test.go)"]
+	TaskID             string
+	UserID             string
+	TaskDescription    string
+	PlanText           string
+	DiffText           string
+	DiffScanFindings   []string // human-readable rule names; e.g. ["removed_test (foo_test.go)"]
+	PriorPersonaSealed map[string]bool // NEW (M7-C.2): persona name → was its receipt sealed
 }
 
 // ReviewResult is what Review returns.
@@ -116,7 +117,7 @@ func (s *Swarm) Review(ctx context.Context, args ReviewArgs) (ReviewResult, erro
 		TaskDescription: args.TaskDescription,
 		PriorOutputs: []brain.Output{
 			{PersonaName: "planner", Text: args.PlanText},
-			{PersonaName: "coder", Text: composeCoderOutput(args.DiffText, args.DiffScanFindings)},
+			{PersonaName: "coder", Text: composeCoderOutput(args.DiffText, args.DiffScanFindings, args.PriorPersonaSealed["planner"], false)},
 		},
 	})
 	if err != nil {
@@ -137,12 +138,16 @@ func (s *Swarm) Review(ctx context.Context, args ReviewArgs) (ReviewResult, erro
 // quality degrades.
 const maxDiffChars = 30000
 
-func composeCoderOutput(diff string, findings []string) string {
+// composeCoderOutput renders the coder's contribution for the reviewer's prompt.
+// The leading sealed-flag block (planner_sealed / coder_sealed) was added in
+// M7-C.2 so the reviewer can scrutinize unsealed-persona output more strictly.
+func composeCoderOutput(diff string, findings []string, plannerSealed, coderSealed bool) string {
+	header := fmt.Sprintf("planner_sealed: %t\ncoder_sealed: %t\n\n", plannerSealed, coderSealed)
 	if len(diff) > maxDiffChars {
 		original := len(diff)
 		diff = diff[:maxDiffChars] + fmt.Sprintf("\n[... diff truncated, original was %d chars ...]", original)
 	}
-	out := "Diff:\n" + diff
+	out := header + "Diff:\n" + diff
 	if len(findings) > 0 {
 		out += "\n\nDiff-scan findings:\n"
 		for _, f := range findings {

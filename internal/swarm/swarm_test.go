@@ -205,3 +205,57 @@ func TestSwarm_New_ReviewerHasReviewerMemNamespace(t *testing.T) {
 	require.Contains(t, blob.Observations[0], "task X")
 	require.Contains(t, blob.Observations[0], "decision: approve")
 }
+
+func TestSwarm_Review_PromptIncludesSealedFlags(t *testing.T) {
+	plannerLLM := &fakeLLM{resp: "plan"}
+	reviewerLLM := &fakeLLM{resp: "ok\nDECISION: approve"}
+	s := swarm.New(swarm.Config{PlannerLLM: plannerLLM, ReviewerLLM: reviewerLLM})
+
+	_, err := s.Review(context.Background(), swarm.ReviewArgs{
+		TaskID:          "t1",
+		TaskDescription: "task",
+		PlanText:        "plan",
+		DiffText:        "diff",
+		PriorPersonaSealed: map[string]bool{
+			"planner": true,
+		},
+	})
+	require.NoError(t, err)
+	require.Contains(t, reviewerLLM.lastReq.UserPrompt, "planner_sealed: true")
+	require.Contains(t, reviewerLLM.lastReq.UserPrompt, "coder_sealed: false")
+}
+
+func TestSwarm_Review_PlannerUnsealedPropagates(t *testing.T) {
+	plannerLLM := &fakeLLM{resp: "plan"}
+	reviewerLLM := &fakeLLM{resp: "ok\nDECISION: approve"}
+	s := swarm.New(swarm.Config{PlannerLLM: plannerLLM, ReviewerLLM: reviewerLLM})
+
+	_, err := s.Review(context.Background(), swarm.ReviewArgs{
+		TaskID:          "t1",
+		TaskDescription: "task",
+		PlanText:        "plan",
+		DiffText:        "diff",
+		PriorPersonaSealed: map[string]bool{
+			"planner": false, // fallback fired
+		},
+	})
+	require.NoError(t, err)
+	require.Contains(t, reviewerLLM.lastReq.UserPrompt, "planner_sealed: false")
+}
+
+func TestSwarm_Review_DefaultsBothSealedFalseWhenMapNil(t *testing.T) {
+	// Backward-compat: if PriorPersonaSealed is nil (pre-M7-C.2 callers),
+	// emit both flags as false. Reviewer treats unknown sealed status as
+	// the safe default.
+	plannerLLM := &fakeLLM{resp: "plan"}
+	reviewerLLM := &fakeLLM{resp: "ok\nDECISION: approve"}
+	s := swarm.New(swarm.Config{PlannerLLM: plannerLLM, ReviewerLLM: reviewerLLM})
+
+	_, err := s.Review(context.Background(), swarm.ReviewArgs{
+		TaskID: "t1", TaskDescription: "task", PlanText: "plan", DiffText: "diff",
+		// PriorPersonaSealed: nil
+	})
+	require.NoError(t, err)
+	require.Contains(t, reviewerLLM.lastReq.UserPrompt, "planner_sealed: false")
+	require.Contains(t, reviewerLLM.lastReq.UserPrompt, "coder_sealed: false")
+}
