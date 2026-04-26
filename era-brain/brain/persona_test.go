@@ -3,6 +3,7 @@ package brain_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -217,4 +218,181 @@ func TestLLMPersona_Run_NoUserIDMeansNoMemoryRead(t *testing.T) {
 	_, err := p.Run(context.Background(), brain.Input{TaskID: "t1", UserID: "", TaskDescription: "t"})
 	require.NoError(t, err)
 	require.NotContains(t, rec.lastReq.UserPrompt, "should not appear")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: write-path tests
+// ---------------------------------------------------------------------------
+
+func TestLLMPersona_Run_WritesObservationAfterLLMCall(t *testing.T) {
+	rec := &recordingLLM{resp: "PLAN_TEXT"}
+	mem := newSpyMem()
+	p := brain.NewLLMPersona(brain.LLMPersonaConfig{
+		Name: "planner", SystemPrompt: "x", Model: "m", LLM: rec, Memory: mem, Now: time.Now,
+		MemoryShaper:    brain.BareHistoryShaper(200),
+		MemoryNamespace: "planner-mem",
+	})
+
+	_, err := p.Run(context.Background(), brain.Input{
+		TaskID:          "t1",
+		UserID:          "user42",
+		TaskDescription: "build login",
+	})
+	require.NoError(t, err)
+
+	raw, ok := mem.puts["planner-mem/user42"]
+	require.True(t, ok, "PutKV should have been called for planner-mem/user42")
+
+	var blob struct {
+		V            int      `json:"v"`
+		Observations []string `json:"observations"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &blob))
+	require.Equal(t, 1, blob.V)
+	require.Len(t, blob.Observations, 1)
+	// BareHistoryShaper returns out.Text truncated — the observation is the LLM response.
+	require.Equal(t, "PLAN_TEXT", blob.Observations[0])
+}
+
+func TestLLMPersona_Run_AppendsToExistingBuffer(t *testing.T) {
+	rec := &recordingLLM{resp: "NEW_PLAN"}
+	mem := newSpyMem()
+	priorBlob := []byte(`{"v":1,"observations":["old obs 1","old obs 2"]}`)
+	require.NoError(t, mem.PutKV(context.Background(), "planner-mem", "user42", priorBlob))
+
+	p := brain.NewLLMPersona(brain.LLMPersonaConfig{
+		Name: "planner", SystemPrompt: "x", Model: "m", LLM: rec, Memory: mem, Now: time.Now,
+		MemoryShaper:    brain.BareHistoryShaper(200),
+		MemoryNamespace: "planner-mem",
+		MaxObservations: 10,
+	})
+
+	_, err := p.Run(context.Background(), brain.Input{
+		TaskID:          "t1",
+		UserID:          "user42",
+		TaskDescription: "new task",
+	})
+	require.NoError(t, err)
+
+	raw := mem.puts["planner-mem/user42"]
+	var blob struct {
+		Observations []string `json:"observations"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &blob))
+	require.Len(t, blob.Observations, 3)
+	require.Equal(t, "old obs 1", blob.Observations[0])
+	require.Equal(t, "old obs 2", blob.Observations[1])
+	// BareHistoryShaper returns out.Text — the new observation is the LLM response.
+	require.Equal(t, "NEW_PLAN", blob.Observations[2])
+}
+
+func TestLLMPersona_Run_TrimsToMaxObservations(t *testing.T) {
+	rec := &recordingLLM{resp: "resp"}
+	mem := newSpyMem()
+
+	// Seed with MaxObservations already full (5 entries), cap is 5.
+	existing := []string{"a", "b", "c", "d", "e"}
+	seedBlob, _ := json.Marshal(map[string]any{"v": 1, "observations": existing})
+	require.NoError(t, mem.PutKV(context.Background(), "ns", "u1", seedBlob))
+
+	p := brain.NewLLMPersona(brain.LLMPersonaConfig{
+		Name: "p", SystemPrompt: "x", Model: "m", LLM: rec, Memory: mem, Now: time.Now,
+		MemoryShaper:    brain.BareHistoryShaper(200),
+		MemoryNamespace: "ns",
+		MaxObservations: 5,
+	})
+
+	_, err := p.Run(context.Background(), brain.Input{
+		TaskID:          "t1",
+		UserID:          "u1",
+		TaskDescription: "new",
+	})
+	require.NoError(t, err)
+
+	raw := mem.puts["ns/u1"]
+	var blob struct {
+		Observations []string `json:"observations"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &blob))
+	require.Len(t, blob.Observations, 5, "buffer should be trimmed to MaxObservations")
+	// oldest entry "a" should have been dropped
+	require.Equal(t, "b", blob.Observations[0])
+	require.Equal(t, "e", blob.Observations[3])
+}
+
+func TestLLMPersona_Run_EmptyShaperOutputSkipsWrite(t *testing.T) {
+	rec := &recordingLLM{resp: "resp"}
+	mem := newSpyMem()
+
+	// A shaper that always returns "".
+	emptyShaper := brain.MemoryShaper(func(_ brain.Input, _ brain.Output) string { return "" })
+
+	p := brain.NewLLMPersona(brain.LLMPersonaConfig{
+		Name: "p", SystemPrompt: "x", Model: "m", LLM: rec, Memory: mem, Now: time.Now,
+		MemoryShaper:    emptyShaper,
+		MemoryNamespace: "ns",
+	})
+
+	_, err := p.Run(context.Background(), brain.Input{
+		TaskID:          "t1",
+		UserID:          "u1",
+		TaskDescription: "t",
+	})
+	require.NoError(t, err)
+	_, ok := mem.puts["ns/u1"]
+	require.False(t, ok, "empty shaper output must not trigger a PutKV")
+}
+
+func TestLLMPersona_Run_NoShaperMeansNoMemoryWrite(t *testing.T) {
+	rec := &recordingLLM{resp: "resp"}
+	mem := newSpyMem()
+
+	p := brain.NewLLMPersona(brain.LLMPersonaConfig{
+		Name: "p", SystemPrompt: "x", Model: "m", LLM: rec, Memory: mem, Now: time.Now,
+		// MemoryShaper omitted.
+	})
+
+	_, err := p.Run(context.Background(), brain.Input{
+		TaskID:          "t1",
+		UserID:          "u1",
+		TaskDescription: "t",
+	})
+	require.NoError(t, err)
+	require.Empty(t, mem.puts, "no shaper → no PutKV")
+}
+
+func TestLLMPersona_Run_DefaultsMaxObservationsTo10(t *testing.T) {
+	rec := &recordingLLM{resp: "resp"}
+	mem := newSpyMem()
+
+	// Seed with 10 entries; default cap is 10; after one run we should still have 10.
+	existing := make([]string, 10)
+	for i := range existing {
+		existing[i] = fmt.Sprintf("obs%d", i)
+	}
+	seedBlob, _ := json.Marshal(map[string]any{"v": 1, "observations": existing})
+	require.NoError(t, mem.PutKV(context.Background(), "ns", "u1", seedBlob))
+
+	p := brain.NewLLMPersona(brain.LLMPersonaConfig{
+		Name: "p", SystemPrompt: "x", Model: "m", LLM: rec, Memory: mem, Now: time.Now,
+		MemoryShaper:    brain.BareHistoryShaper(200),
+		MemoryNamespace: "ns",
+		// MaxObservations deliberately omitted → should default to 10.
+	})
+
+	_, err := p.Run(context.Background(), brain.Input{
+		TaskID:          "t1",
+		UserID:          "u1",
+		TaskDescription: "new",
+	})
+	require.NoError(t, err)
+
+	raw := mem.puts["ns/u1"]
+	var blob struct {
+		Observations []string `json:"observations"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &blob))
+	require.Len(t, blob.Observations, 10, "default MaxObservations should be 10")
+	// obs0 should have been dropped; obs1 should now be first.
+	require.Equal(t, "obs1", blob.Observations[0])
 }

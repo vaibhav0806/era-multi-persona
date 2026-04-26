@@ -162,7 +162,40 @@ func (p *LLMPersona) Run(ctx context.Context, in Input) (Output, error) {
 		entry, _ := json.Marshal(r)
 		_ = p.cfg.Memory.AppendLog(ctx, "audit/"+in.TaskID, entry)
 	}
-	return Output{PersonaName: p.cfg.Name, Text: resp.Text, Receipt: r}, nil
+	out := Output{PersonaName: p.cfg.Name, Text: resp.Text, Receipt: r}
+	p.writeUpdatedObservations(ctx, in, out, prior)
+	return out, nil
+}
+
+// writeUpdatedObservations appends a new observation and trims the buffer
+// to MaxObservations (default 10). All errors are non-fatal — log and return.
+func (p *LLMPersona) writeUpdatedObservations(ctx context.Context, in Input, out Output, prior []string) {
+	if p.cfg.MemoryShaper == nil || p.cfg.Memory == nil || in.UserID == "" || p.cfg.MemoryNamespace == "" {
+		return
+	}
+	obs := p.cfg.MemoryShaper(in, out)
+	if obs == "" {
+		return
+	}
+	maxObs := p.cfg.MaxObservations
+	if maxObs <= 0 {
+		maxObs = defaultMaxObservations
+	}
+	updated := append(prior, obs)
+	if len(updated) > maxObs {
+		updated = updated[len(updated)-maxObs:]
+	}
+	blob := memoryBlob{V: 1, Observations: updated}
+	raw, err := json.Marshal(blob)
+	if err != nil {
+		slog.Warn("persona memory marshal failed",
+			"persona", p.cfg.Name, "err", err)
+		return
+	}
+	if err := p.cfg.Memory.PutKV(ctx, p.cfg.MemoryNamespace, in.UserID, raw); err != nil {
+		slog.Warn("persona memory write failed",
+			"persona", p.cfg.Name, "ns", p.cfg.MemoryNamespace, "err", err)
+	}
 }
 
 func buildUserPrompt(in Input) string {
