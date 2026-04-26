@@ -12,12 +12,14 @@ import (
 )
 
 type fakeLLM struct {
-	resp string
+	resp    string
+	lastReq llm.Request
 }
 
 func (f *fakeLLM) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	f.lastReq = req
 	return llm.Response{
-		Text:   f.resp + "(sys=" + req.SystemPrompt[:min(len(req.SystemPrompt), 20)] + ")",
+		Text:   f.resp,
 		Model:  "test-m",
 		Sealed: false,
 	}, nil

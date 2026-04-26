@@ -137,11 +137,12 @@ func composeCoderOutput(diff string, findings []string) string {
 }
 
 func parseDecision(text string) Decision {
-	// Look for a line starting with "decision: approve". Anything else (including
-	// "decision: flag" or no decision line at all) maps to flag — safe default.
+	// Look for the literal "DECISION: approve" line. Anything else (including
+	// "DECISION: flag", "DECISION: approver", or no decision line at all) maps
+	// to flag — safe default.
 	for _, line := range strings.Split(text, "\n") {
 		l := strings.TrimSpace(strings.ToLower(line))
-		if strings.HasPrefix(l, "decision: approve") {
+		if l == "decision: approve" {
 			return DecisionApprove
 		}
 	}
