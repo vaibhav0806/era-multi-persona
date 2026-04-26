@@ -36,18 +36,22 @@ func New(cfg Config) *Swarm {
 	}
 	return &Swarm{
 		planner: brain.NewLLMPersona(brain.LLMPersonaConfig{
-			Name:         "planner",
-			SystemPrompt: PlannerSystemPrompt,
-			LLM:          cfg.PlannerLLM,
-			Memory:       cfg.Memory,
-			Now:          cfg.Now,
+			Name:            "planner",
+			SystemPrompt:    PlannerSystemPrompt,
+			LLM:             cfg.PlannerLLM,
+			Memory:          cfg.Memory,
+			Now:             cfg.Now,
+			MemoryShaper:    plannerShaper,
+			MemoryNamespace: "planner-mem",
 		}),
 		reviewer: brain.NewLLMPersona(brain.LLMPersonaConfig{
-			Name:         "reviewer",
-			SystemPrompt: ReviewerSystemPrompt,
-			LLM:          cfg.ReviewerLLM,
-			Memory:       cfg.Memory,
-			Now:          cfg.Now,
+			Name:            "reviewer",
+			SystemPrompt:    ReviewerSystemPrompt,
+			LLM:             cfg.ReviewerLLM,
+			Memory:          cfg.Memory,
+			Now:             cfg.Now,
+			MemoryShaper:    reviewerShaper,
+			MemoryNamespace: "reviewer-mem",
 		}),
 	}
 }
