@@ -281,12 +281,22 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
+// ENSResolver is the notifier's view of the ENS provider — only the read +
+// parent-name calls. Defined here so tests can inject a stub without pulling
+// the full era-brain.identity.Resolver interface (writes are out of scope
+// for the DM render path).
+type ENSResolver interface {
+	ReadTextRecord(ctx context.Context, label, key string) (string, error)
+	ParentName() string
+}
+
 type tgNotifier struct {
 	client       telegram.Client
 	chatID       int64
 	sandboxRepo  string   // "owner/repo"
 	repo         *db.Repo // for SetCompletionMessageID
 	progressMsgs sync.Map // taskID (int64) → telegram message ID (int64)
+	ens          ENSResolver // may be nil — set by main when ENS is wired
 }
 
 func (n *tgNotifier) NotifyCompleted(ctx context.Context, a queue.CompletedArgs) {
@@ -315,6 +325,8 @@ func (n *tgNotifier) NotifyCompleted(ctx context.Context, a queue.CompletedArgs)
 		}
 		body += "\n" + rev
 	}
+
+	body += ensFooter(ctx, n.ens)
 
 	msgID, err := n.client.SendMessage(ctx, n.chatID, body)
 	if err != nil {
@@ -364,7 +376,7 @@ func (n *tgNotifier) NotifyProgress(ctx context.Context, id int64, ev queue.Prog
 }
 
 func (n *tgNotifier) NotifyNeedsReview(ctx context.Context, a queue.NeedsReviewArgs) {
-	body := formatNeedsReviewMessage(a)
+	body := formatNeedsReviewMessage(a) + ensFooter(ctx, n.ens)
 
 	buttons := [][]telegram.InlineButton{
 		{
@@ -410,6 +422,42 @@ func formatNeedsReviewMessage(a queue.NeedsReviewArgs) string {
 		fmt.Fprintf(&b, "\n%s", rev)
 	}
 
+	return b.String()
+}
+
+// ensFooter renders the "personas:" section appended to completion / review DMs.
+// Returns "" when ens is nil OR any single read fails OR any persona's records
+// are missing (partial data → empty string, never partial footer).
+func ensFooter(ctx context.Context, ens ENSResolver) string {
+	if ens == nil {
+		return ""
+	}
+	type row struct{ label, addr, tokenID string }
+	rows := make([]row, 0, 3)
+	for _, label := range []string{"planner", "coder", "reviewer"} {
+		addr, err := ens.ReadTextRecord(ctx, label, "inft_addr")
+		if err != nil {
+			return ""
+		}
+		tokenID, err := ens.ReadTextRecord(ctx, label, "inft_token_id")
+		if err != nil {
+			return ""
+		}
+		if addr == "" || tokenID == "" {
+			return ""
+		}
+		rows = append(rows, row{label: label, addr: addr, tokenID: tokenID})
+	}
+	var b strings.Builder
+	b.WriteString("\n\npersonas:")
+	parent := ens.ParentName()
+	for _, r := range rows {
+		shortAddr := r.addr
+		if len(shortAddr) > 12 {
+			shortAddr = shortAddr[:12] + "…"
+		}
+		fmt.Fprintf(&b, "\n  %s.%s → token #%s (%s)", r.label, parent, r.tokenID, shortAddr)
+	}
 	return b.String()
 }
 
