@@ -25,6 +25,7 @@ import (
 	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/fallback"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/openrouter"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/zg_compute"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/identity/ens"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/inft/zg_7857"
 	"github.com/vaibhav0806/era/internal/config"
 	"github.com/vaibhav0806/era/internal/db"
@@ -60,6 +61,15 @@ var version = "0.0.1-m0"
 // pollInterval is how often the orchestrator checks for queued tasks.
 // 2s is short enough to feel responsive and long enough to stay cheap.
 const pollInterval = 2 * time.Second
+
+// Persona metadata zg-storage URIs (raw GitHub blobs of the JSON files at
+// contracts/metadata/{planner,coder,reviewer}.json). Hardcoded — they only
+// change when the metadata schema evolves.
+const (
+	plannerZGURI  = "https://raw.githubusercontent.com/vaibhav0806/era-multi-persona/master/contracts/metadata/planner.json"
+	coderZGURI    = "https://raw.githubusercontent.com/vaibhav0806/era-multi-persona/master/contracts/metadata/coder.json"
+	reviewerZGURI = "https://raw.githubusercontent.com/vaibhav0806/era-multi-persona/master/contracts/metadata/reviewer.json"
+)
 
 func main() {
 	if err := godotenv.Load(); err != nil {
@@ -214,6 +224,36 @@ func main() {
 		sandboxRepo: cfg.GitHubSandboxRepo,
 		repo:        repo,
 	}
+
+	if ensEnabled() {
+		ensProv, err := ens.New(ens.Config{
+			ParentName: os.Getenv("PI_ENS_PARENT_NAME"),
+			RPCURL:     os.Getenv("PI_ENS_RPC"),
+			PrivateKey: os.Getenv("PI_ZG_PRIVATE_KEY"),
+			ChainID:    11155111, // Sepolia
+		})
+		if err != nil {
+			// ENS is decorative; Sepolia public RPC flakes more than 0G's RPC.
+			// Log + continue without ENS instead of aborting boot.
+			slog.Error("ens disabled — boot continues without ENS", "err", err)
+		} else {
+			defer ensProv.Close()
+
+			inftAddr := os.Getenv("PI_ZG_INFT_CONTRACT_ADDRESS")
+			for _, p := range []struct{ label, tokenID, zgURI string }{
+				{"planner", "0", plannerZGURI},
+				{"coder", "1", coderZGURI},
+				{"reviewer", "2", reviewerZGURI},
+			} {
+				if err := syncPersonaENS(ctx, ensProv, p.label, p.tokenID, inftAddr, p.zgURI); err != nil {
+					slog.Warn("ens sync failed", "label", p.label, "err", err)
+				}
+			}
+			notifier.ens = ensProv
+			slog.Info("ENS resolver wired", "parent", os.Getenv("PI_ENS_PARENT_NAME"))
+		}
+	}
+
 	q.SetNotifier(notifier)
 	q.SetProgressNotifier(notifier)
 	handler := telegram.NewHandler(client, q, repo, cfg.GitHubSandboxRepo)
@@ -542,6 +582,33 @@ func zgComputeEnabled() bool {
 func zgINFTEnabled() bool {
 	return os.Getenv("PI_ZG_INFT_CONTRACT_ADDRESS") != "" &&
 		os.Getenv("PI_ZG_PRIVATE_KEY") != ""
+}
+
+// ensEnabled returns true when the ENS parent name + Sepolia RPC are configured
+// AND a private key is available for tx signing.
+func ensEnabled() bool {
+	return os.Getenv("PI_ENS_RPC") != "" &&
+		os.Getenv("PI_ENS_PARENT_NAME") != "" &&
+		os.Getenv("PI_ZG_PRIVATE_KEY") != ""
+}
+
+// syncPersonaENS registers the subname and writes 3 text records for a single
+// persona. Each step is independently idempotent — re-running this on a fully
+// synced subname produces 0 on-chain txs (just 4 RPC reads).
+func syncPersonaENS(ctx context.Context, p *ens.Provider, label, tokenID, inftAddr, zgURI string) error {
+	if err := p.EnsureSubname(ctx, label); err != nil {
+		return fmt.Errorf("ensureSubname: %w", err)
+	}
+	if err := p.SetTextRecord(ctx, label, "inft_addr", inftAddr); err != nil {
+		return fmt.Errorf("set inft_addr: %w", err)
+	}
+	if err := p.SetTextRecord(ctx, label, "inft_token_id", tokenID); err != nil {
+		return fmt.Errorf("set inft_token_id: %w", err)
+	}
+	if err := p.SetTextRecord(ctx, label, "zg_storage_uri", zgURI); err != nil {
+		return fmt.Errorf("set zg_storage_uri: %w", err)
+	}
+	return nil
 }
 
 // zgComposite combines zg_kv (KV ops) and zg_log (Log ops) into a single
