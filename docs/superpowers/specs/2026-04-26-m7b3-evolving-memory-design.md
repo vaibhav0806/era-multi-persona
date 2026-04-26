@@ -51,7 +51,7 @@ New `internal/swarm/shapers.go` with two functions:
 
 **Layer 3 — `era/cmd/orchestrator/main.go` + `internal/queue`.**
 
-`queue.Queue` gains a `userID string` field with a `SetUserID(string)` setter. `RunNext` passes `userID` as `swarm.PlanArgs.UserID` and `swarm.ReviewArgs.UserID`. main.go derives `userID` from `strconv.FormatInt(cfg.AllowedTelegramUserID, 10)` (single-user; PI_TELEGRAM_ALLOWED_USER_ID is the only authoritative ID era already trusts). Calls `q.SetUserID(userID)` at startup before the run loop begins.
+`queue.Queue` gains a `userID string` field with a `SetUserID(string)` setter. `RunNext` passes `userID` as `swarm.PlanArgs.UserID` and `swarm.ReviewArgs.UserID`. main.go derives `userID` from `strconv.FormatInt(cfg.TelegramAllowedUserID, 10)` (single-user; PI_TELEGRAM_ALLOWED_USER_ID is the only authoritative ID era already trusts). Calls `q.SetUserID(userID)` at startup before the run loop begins.
 
 ## §3 — Components (detail)
 
