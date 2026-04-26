@@ -893,8 +893,6 @@ func TestOpenRouter_Complete_HappyPath(t *testing.T) {
 	require.Equal(t, "the response", resp.Text)
 	require.Equal(t, "openai/gpt-4o-mini", resp.Model)
 	require.False(t, resp.Sealed)
-	require.NotEmpty(t, resp.InputHash)
-	require.NotEmpty(t, resp.OutputHash)
 }
 
 func TestOpenRouter_Complete_PerRequestModelOverride(t *testing.T) {
@@ -953,8 +951,6 @@ package openrouter
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1059,26 +1055,15 @@ func (p *Provider) Complete(ctx context.Context, req llm.Request) (llm.Response,
 		usedModel = model
 	}
 
-	// inH hashes the *requested* model (which may have been the default) for
-	// determinism — keeps the receipt stable even if the upstream API substitutes.
-	// M7-C's sealed impl follows the same convention.
-	inH := sha256Hex(req.SystemPrompt + "\x00" + req.UserPrompt + "\x00" + model)
-	outH := sha256Hex(text)
-
 	return llm.Response{
-		Text:       text,
-		Model:      usedModel,
-		Sealed:     false,
-		InputHash:  inH,
-		OutputHash: outH,
+		Text:   text,
+		Model:  usedModel,
+		Sealed: false,
 	}, nil
 }
-
-func sha256Hex(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:])
-}
 ```
+
+The OpenRouter impl returns only `Text`, `Model`, `Sealed`. Receipt-building hashes are computed in the `brain` layer (Task 5's `LLMPersona`) where both Request and Response are visible.
 
 - [ ] **Step 4.4: Run, verify PASS**
 
@@ -1304,7 +1289,7 @@ type recordingLLM struct {
 
 func (r *recordingLLM) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
 	r.lastReq = req
-	return llm.Response{Text: r.resp, Model: "test-m", InputHash: "ih", OutputHash: "oh", Sealed: false}, nil
+	return llm.Response{Text: r.resp, Model: "test-m", Sealed: false}, nil
 }
 
 type spyMem struct {
@@ -1413,6 +1398,8 @@ package brain
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -1456,7 +1443,9 @@ type LLMPersonaConfig struct {
 }
 
 // LLMPersona is the standard Persona impl: builds a prompt from config +
-// PriorOutputs, calls the LLM, writes a receipt to the audit log.
+// PriorOutputs, calls the LLM, computes the receipt's input/output hashes
+// from the prompt and response (so impls don't have to), writes a receipt
+// to the audit log.
 type LLMPersona struct {
 	cfg LLMPersonaConfig
 }
@@ -1481,11 +1470,16 @@ func (p *LLMPersona) Run(ctx context.Context, in Input) (Output, error) {
 	if err != nil {
 		return Output{}, fmt.Errorf("llm complete: %w", err)
 	}
+	// Hash the *requested* model (cfg.Model, possibly empty) for receipt
+	// determinism. The upstream API may substitute a different model; we
+	// record what we asked for so receipts collide on identical requests.
+	inH := sha256Hex(p.cfg.SystemPrompt + "\x00" + user + "\x00" + p.cfg.Model)
+	outH := sha256Hex(resp.Text)
 	r := Receipt{
 		Persona:       p.cfg.Name,
 		Model:         resp.Model,
-		InputHash:     resp.InputHash,
-		OutputHash:    resp.OutputHash,
+		InputHash:     inH,
+		OutputHash:    outH,
 		Sealed:        resp.Sealed,
 		TimestampUnix: p.cfg.Now().Unix(),
 	}
@@ -1511,6 +1505,11 @@ func buildUserPrompt(in Input) string {
 		b.WriteString("\n\n")
 	}
 	return b.String()
+}
+
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
 }
 ```
 
