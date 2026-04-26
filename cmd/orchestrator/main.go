@@ -25,6 +25,7 @@ import (
 	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/fallback"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/openrouter"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/zg_compute"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/inft/zg_7857"
 	"github.com/vaibhav0806/era/internal/config"
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
@@ -180,6 +181,22 @@ func main() {
 	})
 	q.SetSwarm(sw)
 	q.SetUserID(strconv.FormatInt(cfg.TelegramAllowedUserID, 10))
+
+	if zgINFTEnabled() {
+		inftProv, err := zg_7857.New(zg_7857.Config{
+			ContractAddress: os.Getenv("PI_ZG_INFT_CONTRACT_ADDRESS"),
+			EVMRPCURL:       os.Getenv("PI_ZG_EVM_RPC"),
+			PrivateKey:      os.Getenv("PI_ZG_PRIVATE_KEY"),
+			ChainID:         16602, // 0G Galileo testnet
+		})
+		if err != nil {
+			fail(fmt.Errorf("zg_7857 provider: %w", err))
+		}
+		defer inftProv.Close()
+		q.SetINFT(inftProv)
+		slog.Info("0G iNFT registry wired",
+			"contract", os.Getenv("PI_ZG_INFT_CONTRACT_ADDRESS"))
+	}
 
 	if n, err := q.Reconcile(ctx); err != nil {
 		slog.Error("reconcile", "err", err)
@@ -470,6 +487,13 @@ func zgEnabled() bool {
 func zgComputeEnabled() bool {
 	return os.Getenv("PI_ZG_COMPUTE_ENDPOINT") != "" &&
 		os.Getenv("PI_ZG_COMPUTE_BEARER") != ""
+}
+
+// zgINFTEnabled returns true when the iNFT contract address is configured
+// AND a private key is available for tx signing.
+func zgINFTEnabled() bool {
+	return os.Getenv("PI_ZG_INFT_CONTRACT_ADDRESS") != "" &&
+		os.Getenv("PI_ZG_PRIVATE_KEY") != ""
 }
 
 // zgComposite combines zg_kv (KV ops) and zg_log (Log ops) into a single
