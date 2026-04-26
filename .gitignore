@@ -4,6 +4,7 @@
 /runner
 /sidecar
 /zg-smoke
+/zg-compute-smoke
 
 # Local env
 .env
