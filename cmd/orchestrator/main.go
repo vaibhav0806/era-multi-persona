@@ -16,6 +16,10 @@ import (
 
 	"github.com/joho/godotenv"
 	brainsqlite "github.com/vaibhav0806/era-multi-persona/era-brain/memory/sqlite"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/memory"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/memory/dual"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/memory/zg_kv"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/memory/zg_log"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/openrouter"
 	"github.com/vaibhav0806/era/internal/config"
 	"github.com/vaibhav0806/era/internal/db"
@@ -115,10 +119,38 @@ func main() {
 		fail(fmt.Errorf("era-brain sqlite: %w", err))
 	}
 	defer brainMem.Close()
+
+	// Build the memory provider passed to swarm. Default = sqlite alone (M7-A.5 behavior).
+	// If 0G testnet env vars are present, wrap sqlite with the dual provider so audit
+	// log writes land on BOTH 0G AND SQLite.
+	var memProv memory.Provider = brainMem
+	if zgEnabled() {
+		live, err := zg_kv.NewLiveOps(zg_kv.LiveOpsConfig{
+			PrivateKey: os.Getenv("PI_ZG_PRIVATE_KEY"),
+			EVMRPCURL:  os.Getenv("PI_ZG_EVM_RPC"),
+			IndexerURL: os.Getenv("PI_ZG_INDEXER_RPC"),
+			KVNodeURL:  os.Getenv("PI_ZG_KV_NODE"), // optional
+		})
+		if err != nil {
+			fail(fmt.Errorf("0G live ops: %w", err))
+		}
+		defer live.Close()
+		primary := &zgComposite{
+			kvP:  zg_kv.NewWithOps(live),
+			logP: zg_log.NewWithOps(live),
+		}
+		memProv = dual.New(brainMem, primary, func(op string, err error) {
+			slog.Warn("0G primary write failed", "op", op, "err", err)
+		})
+		slog.Info("0G storage wired",
+			"indexer", os.Getenv("PI_ZG_INDEXER_RPC"),
+			"kv_node_set", os.Getenv("PI_ZG_KV_NODE") != "")
+	}
+
 	sw := swarm.New(swarm.Config{
 		PlannerLLM:  plannerLLM,
 		ReviewerLLM: reviewerLLM,
-		Memory:      brainMem,
+		Memory:      memProv,
 	})
 	q.SetSwarm(sw)
 
@@ -396,6 +428,36 @@ func truncateForTelegram(s string, budget int) string {
 // compile-time assertions that tgNotifier satisfies both notifier interfaces
 var _ queue.Notifier = (*tgNotifier)(nil)
 var _ queue.ProgressNotifier = (*tgNotifier)(nil)
+
+// zgEnabled returns true when all required 0G testnet env vars are present.
+// PI_ZG_KV_NODE is optional — its absence just means reads return ErrNotFound,
+// which dual.Provider correctly falls through to the SQLite cache.
+func zgEnabled() bool {
+	return os.Getenv("PI_ZG_PRIVATE_KEY") != "" &&
+		os.Getenv("PI_ZG_EVM_RPC") != "" &&
+		os.Getenv("PI_ZG_INDEXER_RPC") != ""
+}
+
+// zgComposite combines zg_kv (KV ops) and zg_log (Log ops) into a single
+// memory.Provider, used as the Primary in the dual provider. Both sub-providers
+// share the same underlying *zg_kv.LiveOps so we open the SDK clients once.
+type zgComposite struct {
+	kvP  memory.Provider
+	logP memory.Provider
+}
+
+func (c *zgComposite) GetKV(ctx context.Context, ns, key string) ([]byte, error) {
+	return c.kvP.GetKV(ctx, ns, key)
+}
+func (c *zgComposite) PutKV(ctx context.Context, ns, key string, val []byte) error {
+	return c.kvP.PutKV(ctx, ns, key, val)
+}
+func (c *zgComposite) AppendLog(ctx context.Context, ns string, entry []byte) error {
+	return c.logP.AppendLog(ctx, ns, entry)
+}
+func (c *zgComposite) ReadLog(ctx context.Context, ns string) ([][]byte, error) {
+	return c.logP.ReadLog(ctx, ns)
+}
 
 // runDigestScheduler fires once per day at hour:minute UTC and sends a
 // digest message to chatID. Respects ctx for graceful shutdown.
