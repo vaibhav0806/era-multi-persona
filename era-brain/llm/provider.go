@@ -18,11 +18,9 @@ type Request struct {
 // Response is what a completion returns. Sealed=true only when the impl produced
 // an attested receipt (M7-C 0G Compute path); openrouter impl always returns false.
 type Response struct {
-	Text       string
-	Model      string // model the provider actually used (may differ from Request.Model)
-	Sealed     bool
-	InputHash  string // sha256 of (SystemPrompt+UserPrompt+Model); set by impls for receipt building
-	OutputHash string // sha256 of Text; set by impls
+	Text   string
+	Model  string // model the provider actually used (may differ from Request.Model)
+	Sealed bool
 }
 
 // Provider is the LLM completion interface. Impls must be safe for concurrent use.

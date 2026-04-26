@@ -22,6 +22,9 @@ type Receipt struct {
 // Used as the on-chain attestation key in M7-D's recordInvocation.
 func ReceiptHash(r Receipt) string {
 	h := sha256.New()
+	// Pipe-delimited canonical form. DO NOT change separator or field order
+	// without migrating any on-chain records that reference these hashes
+	// (M7-D's recordInvocation logs ReceiptHash outputs).
 	fmt.Fprintf(h, "%s|%s|%s|%s|%t|%d", r.Persona, r.Model, r.InputHash, r.OutputHash, r.Sealed, r.TimestampUnix)
 	return hex.EncodeToString(h.Sum(nil))
 }
