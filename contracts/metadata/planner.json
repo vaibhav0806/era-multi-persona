@@ -1,0 +1,8 @@
+{
+  "name": "Planner",
+  "description": "Era's planner persona — drafts step lists for coding tasks.",
+  "system_prompt_url": "https://raw.githubusercontent.com/vaibhav0806/era-multi-persona/master/internal/swarm/personas.go",
+  "persona_role": "planner",
+  "version": 1,
+  "created_by": "vaibhav0806/era-multi-persona"
+}

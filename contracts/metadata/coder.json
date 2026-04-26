@@ -1,0 +1,8 @@
+{
+  "name": "Coder",
+  "description": "Era's coder persona — Pi-in-Docker tool-loop engine producing diffs and commits.",
+  "system_prompt_url": "https://raw.githubusercontent.com/vaibhav0806/era-multi-persona/master/cmd/runner/pi.go",
+  "persona_role": "coder",
+  "version": 1,
+  "created_by": "vaibhav0806/era-multi-persona"
+}

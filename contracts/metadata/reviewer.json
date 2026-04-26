@@ -1,0 +1,8 @@
+{
+  "name": "Reviewer",
+  "description": "Era's reviewer persona — critiques diffs and produces approve/flag decisions.",
+  "system_prompt_url": "https://raw.githubusercontent.com/vaibhav0806/era-multi-persona/master/internal/swarm/personas.go",
+  "persona_role": "reviewer",
+  "version": 1,
+  "created_by": "vaibhav0806/era-multi-persona"
+}
