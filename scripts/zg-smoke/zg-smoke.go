@@ -63,9 +63,9 @@ func main() {
 	priv := os.Getenv("PI_ZG_PRIVATE_KEY")
 	rpc := os.Getenv("PI_ZG_EVM_RPC")
 	indexerURL := os.Getenv("PI_ZG_INDEXER_RPC")
-	kvNodeURL := os.Getenv("PI_ZG_KV_NODE")
-	if priv == "" || rpc == "" || indexerURL == "" || kvNodeURL == "" {
-		log.Fatal("PI_ZG_PRIVATE_KEY, PI_ZG_EVM_RPC, PI_ZG_INDEXER_RPC, PI_ZG_KV_NODE required")
+	kvNodeURL := os.Getenv("PI_ZG_KV_NODE") // optional for write-only smoke
+	if priv == "" || rpc == "" || indexerURL == "" {
+		log.Fatal("PI_ZG_PRIVATE_KEY, PI_ZG_EVM_RPC, PI_ZG_INDEXER_RPC required (PI_ZG_KV_NODE optional — write-only smoke if missing)")
 	}
 
 	// Web3 client for signing transactions (blockchain.NewWeb3 is the SDK-idiomatic way).
@@ -86,7 +86,10 @@ func main() {
 		log.Fatalf("indexer client: %v", err)
 	}
 	// SelectNodes(ctx, expectedReplica uint, dropped []string, method string, fullTrusted bool)
-	nodes, err := idx.SelectNodes(context.Background(), 1, []string{}, "", false)
+	// method must be "min" / "max" / "random" / numeric — empty string fails with
+	// "cannot select a subset that meets the replication requirement". The SDK
+	// CLI's upload command defaults to "min" + fullTrusted=true; mirror that.
+	nodes, err := idx.SelectNodes(context.Background(), 1, []string{}, "min", true)
 	if err != nil {
 		log.Fatalf("select nodes: %v", err)
 	}
@@ -96,10 +99,16 @@ func main() {
 		log.Fatal("no nodes returned from indexer")
 	}
 
-	// KV read client — uses a dedicated KV node endpoint, not the ZGS storage nodes.
-	kvNode := node.MustNewKvClient(kvNodeURL)
-	defer kvNode.Close()
-	kvClient := kv.NewClient(kvNode)
+	// KV read client (optional — write-only smoke runs if PI_ZG_KV_NODE not set).
+	// The indexer returns ZGS file-storage nodes; KV reads need a dedicated KV node.
+	// If you don't have a KV node URL, the smoke still verifies the write path —
+	// success = tx submitted to testnet without error.
+	var kvClient *kv.Client
+	if kvNodeURL != "" {
+		kvNode := node.MustNewKvClient(kvNodeURL)
+		defer kvNode.Close()
+		kvClient = kv.NewClient(kvNode)
+	}
 
 	// streamId derived from a namespace string by sha256.
 	streamId := sha256Hash("zg-smoke-ns")
@@ -119,6 +128,12 @@ func main() {
 		log.Fatalf("exec: %v", err)
 	}
 	fmt.Printf("[wrote] tx=%s stream=%s key=%s val=%s\n", txHash.Hex(), streamId.Hex(), key, val)
+
+	if kvClient == nil {
+		fmt.Println("[skip read — PI_ZG_KV_NODE not set; write path verified by tx hash above]")
+		fmt.Println("OK (write-only)")
+		return
+	}
 
 	// Wait for testnet confirmation.
 	fmt.Println("[waiting 5s for confirmation...]")
