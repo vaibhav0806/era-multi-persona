@@ -92,7 +92,7 @@ era-brain/
   - Per-token metadata URI pointing to 0G Storage system-prompt blob.
   - Royalty splits: creator cut + holder cut; configurable per token.
   - `recordInvocation(tokenId, sealedReceiptHash)` emitting `Invocation(tokenId, receiptHash, ts)` event.
-- ENS: parent name `<user>-era.eth` (user owns). Orchestrator owns wildcard resolver; on persona mint writes subname text records: `inft_addr`, `inft_token_id`, `zg_storage_uri`.
+- ENS: parent name `<user>-era.eth` is **pre-registered manually by the user** before the demo (one-time, ~5 min in the ENS app). Orchestrator owns the wildcard resolver contract; on persona mint writes subname text records: `inft_addr`, `inft_token_id`, `zg_storage_uri`. Orchestrator does not register the parent name itself — keeps M7-E scoped to resolver writes only.
 
 ## §4 — Error handling, testing, security
 
@@ -116,7 +116,7 @@ era-brain/
 
 Original era's three threats (prompt injection, reward hacking, push-credential blast radius) still apply. Two additions:
 
-- **Sealed-inference receipt forgery.** A compromised persona could fake a sealed-inference receipt to claim a coder ran on a model it didn't. Mitigated: receipts written directly to 0G Log by the LLM provider, not by the persona itself; reviewer fetches receipts from Log, not from coder's claim; mismatch flags the task.
+- **Sealed-inference receipt forgery.** The receipt is only as trustworthy as 0G Compute's own attestation chain — the `LLMProvider` impl runs in the same container as the persona, so "the provider writes the receipt" is a code-boundary, not a trust-boundary, claim. The actual mitigation is the **reviewer cross-check**: reviewer persona fetches receipts from 0G Log (not from coder's claim) and re-verifies the attestation hash against 0G Compute's published verifier. We do not invent a forgery defense beyond what 0G Compute provides; if 0G's attestation is broken, every team's submission has the same hole.
 - **Hot-wallet compromise.** Orchestrator holds a hot wallet for minting + recording. Mitigation: small balance only (gas-budget), funded just-in-time. Loss of wallet = loss of mint capability for that orchestrator instance, not loss of past data.
 
 Reward-hacking guard now stacks: existing diff-scan rules + sealed-inference receipt for the coder + reviewer persona's critique + reviewer's own sealed receipt.
@@ -147,7 +147,7 @@ New repo `era-brain`. Interfaces (`Persona`, `Brain`, `MemoryProvider`, `LLMProv
 
 ### M7-D — iNFT contract + minting (~3 days)
 
-Fork 0G ERC-7857 template. Add royalty splits + `recordInvocation`. Foundry tests. Deploy to 0G testnet. Go client in `era-brain/inft/zg_7857/`. Orchestrator mints three defaults on first startup. `/persona-mint` Telegram command for custom personas. Hook `recordInvocation` into brain post-call.
+Fork 0G ERC-7857 template. Add royalty splits + `recordInvocation`. Foundry tests. Deploy to 0G testnet. Go client in `era-brain/inft/zg_7857/`. Orchestrator mints three defaults on first startup; mint is **idempotent** — checks the iNFT contract for existing `(creator, name)` tuples before submitting tx, so repeated dev runs do not produce duplicate token IDs. `/persona-mint` Telegram command for custom personas (also idempotent on `(creator, name)`). Hook `recordInvocation` into brain post-call.
 
 **Live gate:** `/task` triggers three on-chain events visible on 0G explorer; mint a custom persona; use it in next `/task`.
 
