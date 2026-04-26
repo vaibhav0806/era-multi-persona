@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,13 @@ import (
 	"github.com/vaibhav0806/era/internal/progress"
 	"github.com/vaibhav0806/era/internal/swarm"
 	"github.com/vaibhav0806/era/internal/telegram"
+)
+
+const (
+	plannerTokenID  = "0"
+	reviewerTokenID = "2"
+	// coder tokenID 1 skipped — Pi-in-Docker is unsealed per M7-C scope;
+	// no LLMPersona receipt to record.
 )
 
 // TokenSource yields a fresh (or cached-still-valid) installation token for
@@ -50,6 +58,13 @@ type Runner interface {
 type Swarm interface {
 	Plan(ctx context.Context, args swarm.PlanArgs) (swarm.PlanResult, error)
 	Review(ctx context.Context, args swarm.ReviewArgs) (swarm.ReviewResult, error)
+}
+
+// INFTProvider is the queue's view of the iNFT registry: just RecordInvocation.
+// Defined here so queue tests can inject a stub without pulling the full
+// era-brain.inft.Registry interface (Mint/Lookup are out of M7-D.2 scope).
+type INFTProvider interface {
+	RecordInvocation(ctx context.Context, tokenID, receiptHashHex string) error
 }
 
 // NeedsReviewArgs bundles the approval-DM payload. Lives in queue so tests
@@ -141,6 +156,7 @@ type Queue struct {
 	running          *RunningSet     // initialized in New
 	swarm            Swarm           // may be nil
 	userID           string
+	inft             INFTProvider // may be nil
 }
 
 func New(repo *db.Repo, runner Runner, tokens TokenSource, compare DiffSource, repoFQN string) *Queue {
@@ -165,6 +181,11 @@ func (q *Queue) SetSwarm(s Swarm) { q.swarm = s }
 
 // SetUserID sets the user identity threaded into swarm Plan/Review calls.
 func (q *Queue) SetUserID(id string) { q.userID = id }
+
+// SetINFT attaches an iNFT registry to this Queue. When set, RunNext records
+// an Invocation event per persona LLM run after each successful Plan/Review.
+// Failures are non-fatal — logged via slog.Warn.
+func (q *Queue) SetINFT(p INFTProvider) { q.inft = p }
 
 func (q *Queue) CreateAskTask(ctx context.Context, desc, targetRepo string) (int64, error) {
 	task, err := q.repo.CreateAskTask(ctx, desc, targetRepo)
@@ -281,6 +302,13 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 			planText = pr.PlanText
 			plannerReceipt = pr.Receipt
 			_ = q.repo.AppendEvent(ctx, t.ID, "planner_ok", quoteJSON(planText))
+		}
+		if perr == nil && q.inft != nil {
+			hash := brain.ReceiptHash(plannerReceipt)
+			if recErr := q.inft.RecordInvocation(ctx, plannerTokenID, hash); recErr != nil {
+				slog.Warn("inft recordInvocation failed (planner)",
+					"task_id", t.ID, "tokenID", plannerTokenID, "err", recErr)
+			}
 		}
 	}
 
@@ -403,6 +431,13 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 			reviewCritique = rr.CritiqueText
 			reviewDecision = rr.Decision
 			_ = q.repo.AppendEvent(ctx, t.ID, "reviewer_ok", quoteJSON(string(reviewDecision)))
+		}
+		if rerr == nil && q.inft != nil {
+			hash := brain.ReceiptHash(reviewerReceipt)
+			if recErr := q.inft.RecordInvocation(ctx, reviewerTokenID, hash); recErr != nil {
+				slog.Warn("inft recordInvocation failed (reviewer)",
+					"task_id", t.ID, "tokenID", reviewerTokenID, "err", recErr)
+			}
 		}
 	}
 

@@ -884,3 +884,101 @@ func TestRunNext_PassesUnsealedPlannerToReviewer(t *testing.T) {
 
 	require.False(t, stub.lastReviewArgs.PriorPersonaSealed["planner"])
 }
+
+type stubINFT struct {
+	mu          sync.Mutex
+	calls       []stubINFTCall
+	failOnFirst bool
+}
+
+type stubINFTCall struct {
+	tokenID        string
+	receiptHashHex string
+}
+
+func (s *stubINFT) RecordInvocation(_ context.Context, tokenID, receiptHashHex string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, stubINFTCall{tokenID: tokenID, receiptHashHex: receiptHashHex})
+	if s.failOnFirst && len(s.calls) == 1 {
+		return errors.New("stubINFT: simulated first-call failure")
+	}
+	return nil
+}
+
+func TestRunNext_RecordsInvocationForPlannerAndReviewer(t *testing.T) {
+	fr := &fakeRunner{branch: "agent/1/ok", summary: "ok"}
+	q, repo := newRunQueue(t, fr)
+
+	stub := &stubSwarm{
+		planText:       "1. step",
+		plannerSealed:  true,
+		reviewDecision: swarm.DecisionApprove,
+	}
+	q.SetSwarm(stub)
+	q.SetUserID("u")
+
+	inftStub := &stubINFT{}
+	q.SetINFT(inftStub)
+
+	_, err := repo.CreateTask(context.Background(), "do thing", "owner/repo", "default")
+	require.NoError(t, err)
+	processed, err := q.RunNext(context.Background())
+	require.NoError(t, err)
+	require.True(t, processed)
+
+	inftStub.mu.Lock()
+	defer inftStub.mu.Unlock()
+	require.Len(t, inftStub.calls, 2, "expected planner + reviewer invocations recorded")
+	require.Equal(t, "0", inftStub.calls[0].tokenID, "planner tokenID = 0")
+	require.Equal(t, "2", inftStub.calls[1].tokenID, "reviewer tokenID = 2")
+	require.Len(t, inftStub.calls[0].receiptHashHex, 64, "receipt hash should be 64-char hex")
+	require.Len(t, inftStub.calls[1].receiptHashHex, 64)
+}
+
+func TestRunNext_INFTFailureDoesNotBlockTask(t *testing.T) {
+	fr := &fakeRunner{branch: "agent/1/ok", summary: "ok"}
+	q, repo := newRunQueue(t, fr)
+
+	stub := &stubSwarm{
+		planText:       "1. step",
+		plannerSealed:  true,
+		reviewDecision: swarm.DecisionApprove,
+	}
+	q.SetSwarm(stub)
+	q.SetUserID("u")
+
+	inftStub := &stubINFT{failOnFirst: true}
+	q.SetINFT(inftStub)
+
+	_, err := repo.CreateTask(context.Background(), "do thing", "owner/repo", "default")
+	require.NoError(t, err)
+	processed, err := q.RunNext(context.Background())
+	require.NoError(t, err, "INFT failure must not block task completion")
+	require.True(t, processed)
+
+	inftStub.mu.Lock()
+	defer inftStub.mu.Unlock()
+	require.Len(t, inftStub.calls, 2, "second call should attempt despite first failure")
+}
+
+func TestRunNext_NoINFTProviderSkipsRecording(t *testing.T) {
+	fr := &fakeRunner{branch: "agent/1/ok", summary: "ok"}
+	q, repo := newRunQueue(t, fr)
+
+	stub := &stubSwarm{
+		planText:       "1. step",
+		plannerSealed:  true,
+		reviewDecision: swarm.DecisionApprove,
+	}
+	q.SetSwarm(stub)
+	q.SetUserID("u")
+
+	// q.SetINFT(...) NOT called — provider stays nil.
+
+	_, err := repo.CreateTask(context.Background(), "do thing", "owner/repo", "default")
+	require.NoError(t, err)
+	processed, err := q.RunNext(context.Background())
+	require.NoError(t, err)
+	require.True(t, processed, "task should complete with no INFTProvider")
+}
