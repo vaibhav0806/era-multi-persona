@@ -54,6 +54,22 @@ abigen: ## Regenerate iNFT abigen bindings from contracts/out (ABI + bytecode fo
 	  --out era-brain/inft/zg_7857/bindings/era_persona_inft.go
 	@echo "Bindings regenerated (with bytecode for simulated.Backend deploys)."
 
+.PHONY: abigen-ens
+abigen-ens: ## Regenerate ENS abigen bindings from contracts/test mocks (ABIs match real Sepolia NameWrapper + PublicResolver subsets we use)
+	@command -v jq >/dev/null || { echo "ERROR: jq not installed"; exit 1; }
+	@command -v abigen >/dev/null || { echo "ERROR: abigen not installed (go install github.com/ethereum/go-ethereum/cmd/abigen@v1.17.2)"; exit 1; }
+	cd contracts && forge build
+	mkdir -p era-brain/identity/ens/bindings
+	jq '.abi' contracts/out/MockNameWrapper.sol/MockNameWrapper.json > /tmp/era_namewrapper.abi
+	jq -r '.bytecode.object' contracts/out/MockNameWrapper.sol/MockNameWrapper.json | sed 's/^0x//' > /tmp/era_namewrapper.bin
+	abigen --abi /tmp/era_namewrapper.abi --bin /tmp/era_namewrapper.bin --pkg bindings --type NameWrapper \
+	  --out era-brain/identity/ens/bindings/name_wrapper.go
+	jq '.abi' contracts/out/MockPublicResolver.sol/MockPublicResolver.json > /tmp/era_resolver.abi
+	jq -r '.bytecode.object' contracts/out/MockPublicResolver.sol/MockPublicResolver.json | sed 's/^0x//' > /tmp/era_resolver.bin
+	abigen --abi /tmp/era_resolver.abi --bin /tmp/era_resolver.bin --pkg bindings --type PublicResolver \
+	  --out era-brain/identity/ens/bindings/public_resolver.go
+	@echo "ENS bindings regenerated."
+
 VPS_HOST ?= era@178.105.44.3
 
 .PHONY: deploy
