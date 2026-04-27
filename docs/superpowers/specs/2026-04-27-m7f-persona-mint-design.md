@@ -48,10 +48,10 @@ func (p *Provider) Mint(ctx context.Context, name, systemPromptURI string) (inft
 
 Implementation:
 1. Build `auth := *p.auth; auth.Context = ctx` (same shallow-copy pattern as `RecordInvocation`).
-2. `tx, err := p.contract.Mint(&auth, p.signer, systemPromptURI)` — calls the deployed contract's `mint(address to, string memory uri) external onlyOwner returns (uint256)`.
-3. Wait for receipt via `bind.WaitMined` (gated on `p.dialedClient != nil` — same pattern as M7-E.1).
-4. Parse `Transfer(from=0x0, to=signer, tokenId)` event from receipt logs to extract token ID.
-5. Return `inft.Persona{TokenID: tokenID.String(), Name: name, SystemPromptURI: systemPromptURI, Owner: p.signer.Hex()}`.
+2. `tx, err := p.contract.Mint(&auth, p.auth.From, systemPromptURI)` — calls the deployed contract's `mint(address to, string memory uri) external onlyOwner returns (uint256)`. Note: `Provider` has no `signer` field; the wallet address is `p.auth.From`.
+3. Wait for receipt: `rc, err := bind.WaitMined(ctx, p.client, tx)` then check `rc.Status == types.ReceiptStatusSuccessful`. (The current `Provider.RecordInvocation` discards the tx; for Mint we need the receipt to extract the token ID, so we always wait — no `dialedClient` gate needed since this code path always sets up a real client via `New`.)
+4. Parse `Transfer(from=0x0, to=auth.From, tokenId)` event from receipt logs using the abigen-generated filter helper `p.contract.ParseTransfer(*log)` (defined on `EraPersonaINFTFilterer` at `bindings/era_persona_inft.go`). Iterate `rc.Logs`, call `ParseTransfer`, take the first match where `event.From == 0x0` and `event.To == p.auth.From`. Token ID is `event.TokenId.String()`.
+5. Return `inft.Persona{TokenID: tokenID, Name: name, SystemPromptURI: systemPromptURI, Owner: p.auth.From.Hex()}`.
 
 ### 0G Storage upload helper
 
@@ -231,8 +231,8 @@ DM:
 | Prompt validation fails (empty, < 20, > 4000) | DM error; no chain calls |
 | 0G Storage upload fails | DM error; no mint, no ENS, no SQLite write |
 | iNFT mint reverts (gas, ACL, nonce) | DM error; prompt blob orphaned in 0G (acceptable — tiny, no rollback) |
-| Mint succeeded; ENS write reverts | DM warn "minted as token #N; ENS not set (will reconcile next boot)"; SQLite written WITHOUT ens_subname |
-| Mint succeeded; SQLite insert fails | unrecoverable inline; reconcile from chain on next boot recovers |
+| Mint succeeded; ENS write reverts | DM warn "minted as token #N; ENS not set (will retry on next boot)"; SQLite written WITHOUT ens_subname; **boot reconcile re-runs `EnsureSubname` + setText for personas with empty ens_subname** (see §7.5) |
+| Mint succeeded; SQLite insert fails | DM error "minted token #N at <chainscan>; local registry write failed; will recover on next boot"; **boot reconcile scans on-chain `Transfer` events from highest known token ID and upserts** (see §7.5) |
 | `/task --persona=<name>`: name unknown | task fails with "unknown persona <name>; run /personas"; NO chain calls made |
 | Persona prompt fetch from 0G fails at /task time | fail task ("can't fetch persona prompt"); receipts not generated |
 | `/persona-mint` invoked with iNFT env vars missing | hard reject ("iNFT env vars required") — mint depends on it |
@@ -265,14 +265,24 @@ This becomes **M7-F**. Five phases following the M7-D.2 / M7-E pattern. Each pha
 
 - Extend `Ops` interface with `MintPersona` + `ListPersonas`. Handler routes `/persona-mint` (with name + prompt validation, hard reject on collision) and `/personas`. TDD via `handler_test.go` patterns. Tag `m7f-3-telegram-mint`.
 
-### M7-F.4 — `/task --persona=<name>` plumbing (~0.5 day)
+### M7-F.4 — `/task --persona=<name>` plumbing + ensFooter refactor (~0.5 day)
 
-- Flag parse in handler (extend `parseBudgetFlag` pattern). `CreateTask` signature gains `personaName`. DB column added (migration `0012_tasks_persona_name.sql`). Queue `RunNext`: `Lookup(persona) → fetchPrompt → custom coder slot → recordInvocation tokenID = persona.TokenID`. TDD via `queue_run_test.go` with stubPersonas. Tag `m7f-4-task-persona`.
+- Flag parse in handler (extend `parseBudgetFlag` pattern). `CreateTask` signature gains `personaName`. DB column added (migration `0012_tasks_persona_name.sql`). Queue `RunNext`: `Lookup(persona) → fetchPrompt → custom coder slot → recordInvocation tokenID = persona.TokenID`.
+- **ensFooter refactor** (per §10 risk #5): add `PersonaLabels []string` to `CompletedArgs` + `NeedsReviewArgs`; queue populates per task; `ensFooter` signature gains `labels` param.
+- TDD via `queue_run_test.go` with stubPersonas. **Required new test** `TestRunNext_CustomPersona_FreshNamespace_NoError` — exercises a never-before-seen memory namespace string to verify M7-B.3 evolving memory handles it (don't assume; assert).
+- Tag `m7f-4-task-persona`.
 
-### M7-F.5 — orchestrator boot reconcile + live Telegram gate (~0.5 day)
+### M7-F.5 — orchestrator boot reconcile + live Telegram gate (~0.7 day)
 
-- `personasReconcile()` in main.go: seeds 3 default personas if SQLite empty. Boot-time iNFT contract event scan for new tokens since highest known token ID (cuts-list candidate — see §10).
-- Real Telegram live gate: `/persona-mint rustacean ...` → DM links → `/task --persona=rustacean ...` → PR + DM with `rustacean.vaibhav-era.eth` in personas footer + iNFT contract event for token #3. Tag `m7f-done`.
+`personasReconcile()` in `main.go` runs three reconcile passes at boot, each idempotent:
+
+1. **Default seed.** If `personas` table is missing rows for token IDs 0/1/2, INSERT OR IGNORE them with hardcoded values (matches the iNFT mint metadata committed at M7-D.1: planner, coder, reviewer + their raw-GitHub URIs).
+2. **On-chain Transfer scan.** Compute `maxKnownTokenID := SELECT MAX(CAST(token_id AS INTEGER))`. Use `p.contract.FilterTransfer(opts, []common.Address{zeroAddr}, []common.Address{p.auth.From}, nil)` from block 0 (or last known boot block, stored in a small key-value table to avoid scanning history each boot). For each event with `tokenID > maxKnownTokenID`, fetch `tokenURI(tokenID)` via the contract, fetch the prompt blob from 0G storage, upsert into SQLite with `ens_subname = ''`. Recovers from "mint succeeded but SQLite insert failed" — closes §5 row 2.
+3. **ENS retry pass.** `SELECT * FROM personas WHERE ens_subname = ''` → for each, run `EnsureSubname(label) + 4 × SetTextRecord(...)` (same as `syncPersonaENS` from M7-E.3 but driven from SQLite rows instead of hardcoded list). Closes §5 row 1.
+
+All three passes are non-fatal individually — failures log + continue (mirrors M7-E.3 pattern). The whole reconcile runs after `q.SetNotifier(notifier)` and before goroutines start consuming tasks.
+
+Real Telegram live gate: `/persona-mint rustacean ...` → DM links → `/task --persona=rustacean ...` → PR + DM with `rustacean.vaibhav-era.eth` in personas footer + iNFT contract event for token #3. Tag `m7f-done`.
 
 ## §8 — Out of scope (deferred / cuts)
 
@@ -283,7 +293,7 @@ This becomes **M7-F**. Five phases following the M7-D.2 / M7-E pattern. Each pha
 - **Marketplace / royalty splits.** Out of M7-F entirely (cuts-list since M7-D).
 - **`/persona-edit`, `/persona-show <name>`.** Stretch only.
 - **Avatar / extended ENS records** (avatar URL, github_url, etc.). Add 1-2 in M7-F.3 if cheap, otherwise defer.
-- **Boot reconcile from on-chain Transfer events.** Cuts-list candidate — start with seeding 3 defaults only; require fresh DB to re-mint custom personas. Acceptable for demo (we control SQLite lifecycle).
+- **(MOVED IN-SCOPE)** ~~Boot reconcile from on-chain Transfer events.~~ Promoted to M7-F.5 because it's the recovery path for two §5 failure modes (mint+SQLite-fail, mint+ENS-fail). Cost: ~1 hour of implementation; halves the demo-fragility blast radius.
 - **LRU prompt cache.** First-task latency for a persona = 1 0G fetch (~500ms-2s); per-process map cache after that. No eviction needed at demo scale.
 
 ## §9 — Acceptance criteria (M7-F done)
@@ -302,18 +312,20 @@ This becomes **M7-F**. Five phases following the M7-D.2 / M7-E pattern. Each pha
 4. `/personas` lists all known personas (3 defaults + custom mints).
 5. Hard rejects: duplicate name, invalid name format, unknown persona at /task time.
 6. Without ENS env vars: mint succeeds (SQLite written, no ENS records); /personas works; /task --persona= still works.
-7. SQLite-wipe + restart: 3 defaults reconcile automatically. Custom personas DO NOT auto-reconcile (out of scope per §8) — DB-wipe means re-minting. Documented.
+7. SQLite-wipe + restart: 3 defaults reconcile automatically AND custom personas re-import from on-chain Transfer events — `/personas` shows the full pre-wipe list after a single boot. ENS reconcile pass also re-fills any rows with empty `ens_subname`.
 
 ## §10 — Risks + cuts list (in order if slipping)
 
 1. **Contract `mint` is `external onlyOwner`** — verified, signer == owner. Pre-flight: `cast call $PI_ZG_INFT_CONTRACT_ADDRESS 'owner()(address)' --rpc-url $PI_ZG_EVM_RPC` returns signer.
 2. **Transfer event parsing fragility.** ERC-721 standard event is `Transfer(address indexed from, address indexed to, uint256 indexed tokenId)`. Implementer must use abigen-generated event filter, not raw log decoding. Recovery: copy the planner/reviewer minted-token-ID parsing pattern from the M7-D.1 deploy script if it exists.
 3. **0G Storage upload latency** could make `/persona-mint` feel slow (~5-10s). Acceptable. Mitigation: edit "minting…" DM with a progress phase ("✓ uploaded prompt; minting…"). Cuts-list.
-4. **Memory namespace per persona, fresh on first task.** Existing M7-B.3 evolving memory handles namespace-not-yet-existing (returns empty memory, writes seed). Verified during M7-B.3 — no risk.
-5. **`personas:` footer in DM.** M7-E.2 hardcoded the labels `{planner, coder, reviewer}` to query. With custom personas, footer must reflect the actual personas used. Two options:
-   - **A.** Pass per-task `usedPersonaLabels []string` from queue → tgNotifier → ensFooter. Renames the hardcoded list to a parameter. One small refactor.
-   - **B.** Keep hardcoded; footer always shows the 3 defaults regardless. Footer becomes misleading for /task --persona= tasks.
-   Implement A. Plan must include this refactor explicitly.
+4. **Memory namespace per persona, fresh on first task.** Existing M7-B.3 evolving memory handles namespace-not-yet-existing (returns empty memory, writes seed). Verification not assumed: M7-F.4 includes `TestRunNext_CustomPersona_FreshNamespace_NoError` which exercises a fresh namespace and asserts task completes successfully.
+5. **`personas:` footer in DM — refactor required.** M7-E.2 hardcoded `[]string{"planner", "coder", "reviewer"}` inside `ensFooter` (`cmd/orchestrator/main.go:471`). With custom personas the footer must reflect the actual labels used per task. Refactor (option A from prior review):
+   - **New signature:** `ensFooter(ctx context.Context, ens ENSResolver, labels []string) string`. Caller passes the labels for THIS task.
+   - **Caller plumbing:** `queue.CompletedArgs` + `queue.NeedsReviewArgs` (in `internal/queue/queue.go:72-101`) get a new field `PersonaLabels []string`. Queue's `RunNext` populates it: for default tasks `["planner", "coder", "reviewer"]`; for `/task --persona=rustacean` `["planner", "rustacean", "reviewer"]`. tgNotifier's `NotifyCompleted` (main.go:292) and `NotifyNeedsReview` (main.go:366) read `a.PersonaLabels` and pass to `ensFooter`.
+   - **Empty/nil labels fallback:** If `len(labels) == 0`, treat as legacy default (use the 3 builtins) — keeps backwards-compat with any code path that hasn't been updated.
+   - **Test update:** existing 4 `TestEnsFooter_*` tests in `notifier_ens_test.go` get a `labels` arg added; new test `TestEnsFooter_CustomPersonaLabels` exercises non-default labels.
+   This refactor lands in M7-F.4 alongside the `/task --persona=` plumbing.
 6. **Reserved-name list collision.** Hard reject on `{planner, coder, reviewer}`. Test case in handler_test.
 7. **ENS subname creation race** — same risk as M7-E (parent must be wrapped). Already wrapped, no risk.
 8. **Default-persona reconcile collision.** Boot reconcile inserts defaults if missing. If a previous reconcile partially completed (e.g., 2 of 3 defaults), unique constraint must allow upsert. Use `INSERT OR IGNORE` for defaults, plain `INSERT` for user mints.
