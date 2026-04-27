@@ -1626,7 +1626,7 @@ if rerr == nil && q.inft != nil {
 
 ⚠ **Coder receipt hash.** Currently M7-D.2 only records planner + reviewer. Pi has no `brain.Receipt`. To honor "task ran under persona X" semantics, compute a deterministic stand-in hash: `sha256(taskID + personaName + branch + summary)`. Or skip the coder record for now — this is a design call. For demo: **add the coder record using a stand-in hash** so `recordInvocation` events appear for custom-persona tokens. Note it as a stand-in in the commit message + a code comment.
 
-Add the queue field `q.personas`, `q.zgStorage`, setters from Phase 3. The existing `q.failTask` helper may not exist by that name — find the equivalent (probably inline `repo.MarkFailed` or similar). Adapt.
+Add the queue fields `q.personas`, `q.zgStorage` and their `SetPersonas` / `SetPromptStorage` setters (mirrors the `SetINFT` / `SetSwarm` pattern from earlier milestones).
 
 Build the per-task `personaLabels` and pass it through:
 
