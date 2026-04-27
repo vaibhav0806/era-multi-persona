@@ -98,22 +98,40 @@ Note the existing 0G storage client construction (likely in `zg_log` or `zg_kv` 
 
 ### 1A: Failing unit test for Mint
 
-- [ ] **Step 1.1: Append failing tests to `zg_7857_test.go`**
+- [ ] **Step 1.1a: Add `NewWithClient` constructor to `zg_7857.go`**
 
-Add to `era-brain/inft/zg_7857/zg_7857_test.go`:
+The existing `zg_7857.go` only has `New(cfg)` (which dials via `ethclient.Dial`). Tests against `simulated.Backend` need to inject a pre-built client. Mirror the M7-E.1 ens.go pattern by adding:
+
+```go
+// ContractClient is the subset of *ethclient.Client + simulated.Client we need.
+// Both satisfy bind.ContractBackend and bind.DeployBackend; in tests we pass a
+// simulated.Client, in prod a *ethclient.Client.
+type ContractClient interface {
+	bind.ContractBackend
+	bind.DeployBackend
+}
+
+// NewWithClient is a test entry point: skip dial, use the provided client.
+// Production callers use New.
+func NewWithClient(cfg Config, client ContractClient) (*Provider, error) {
+	return newWithBackend(cfg, client)
+}
+```
+
+Refactor `New` to delegate to a private `newWithBackend(cfg, client)` (same shape as ens.go's `newWithBackend`). The `Provider` struct's existing `client *ethclient.Client` field needs to become `ContractClient`-typed (or split into `client ContractClient` + `dialedClient *ethclient.Client` like ens.go) so simulated clients work. Read `era-brain/identity/ens/ens.go:55-78` for the exact shape.
+
+Run `go build ./inft/zg_7857/...` to confirm refactor compiles before continuing. NO commit yet — this is part of Step 1.1.
+
+- [ ] **Step 1.1b: Append failing tests to `zg_7857_test.go`**
+
+`deployContractOnSim` already returns `*ecdsa.PrivateKey` as the 4th value — verified at `era-brain/inft/zg_7857/zg_7857_test.go:20`. Use it directly. No `privKeyOf` helper needed.
 
 ```go
 func TestProvider_Mint_HappyPath(t *testing.T) {
-	// Deploy contract on simulated.Backend (helper from existing tests).
-	// Constructor mints tokenIDs 0/1/2 to deployer? Check the contract's
-	// constructor — if it pre-mints defaults, our Mint will produce token ID 3.
-	// If not, token ID 0.
-	backend, contract, auth, _, addr := deployContractOnSim(t)
-	_ = addr
+	backend, contract, auth, key, addr := deployContractOnSim(t)
 	_ = contract
 
-	// Build a Provider that points at the deployed contract via NewWithClient.
-	keyHex := common.Bytes2Hex(crypto.FromECDSA(privKeyOf(t, auth)))
+	keyHex := common.Bytes2Hex(crypto.FromECDSA(key))
 	p, err := zg_7857.NewWithClient(zg_7857.Config{
 		ContractAddress: addr.Hex(),
 		PrivateKey:      keyHex,
@@ -122,15 +140,15 @@ func TestProvider_Mint_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(p.Close)
 
-	// Mint a custom persona.
 	persona, err := p.Mint(context.Background(), "rustacean", "ipfs://prompt-blob")
 	require.NoError(t, err)
+	backend.Commit() // safety: ensure mint receipt is in a sealed block
 	require.NotEmpty(t, persona.TokenID, "token ID should be populated from Transfer event")
 	require.Equal(t, "rustacean", persona.Name)
 	require.Equal(t, "ipfs://prompt-blob", persona.SystemPromptURI)
 	require.Equal(t, auth.From.Hex(), persona.Owner)
+	require.NotEmpty(t, persona.MintTxHash, "tx hash should be populated for DM rendering")
 
-	// Verify on-chain state via direct contract reads.
 	tokenID, ok := new(big.Int).SetString(persona.TokenID, 10)
 	require.True(t, ok)
 	owner, err := contract.OwnerOf(&bind.CallOpts{}, tokenID)
@@ -141,35 +159,9 @@ func TestProvider_Mint_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "ipfs://prompt-blob", uri)
 }
-
-func TestProvider_Mint_NoSignerField_UsesAuthFrom(t *testing.T) {
-	// Provider has no `signer` field; the address is p.auth.From.
-	// This test exists to lock in that contract: if a future refactor
-	// adds `p.signer`, this test still passes; if it removes p.auth.From,
-	// it fails to compile.
-	_, _, auth, _, addr := deployContractOnSim(t)
-	keyHex := common.Bytes2Hex(crypto.FromECDSA(privKeyOf(t, auth)))
-	p, err := zg_7857.NewWithClient(zg_7857.Config{
-		ContractAddress: addr.Hex(),
-		PrivateKey:      keyHex,
-		ChainID:         1337,
-	}, /* same simulated client; reuse from helper */ nil)
-	if err == nil {
-		t.Cleanup(p.Close)
-		// No assertions needed; this test compiles only if Provider.Mint
-		// uses a valid wallet-address derivation.
-	}
-}
 ```
 
-The test references a `privKeyOf(t, *bind.TransactOpts)` helper to extract the key from the simulated test setup. If the existing `deployContractOnSim` doesn't expose the key directly, refactor it to return the `*ecdsa.PrivateKey` as well — verify the existing test helper signature first via `grep -n "func deployContractOnSim" era-brain/inft/zg_7857/zg_7857_test.go`.
-
-If the existing helper does not return the key, **adapt** by:
-1. Reading the helper, finding where the key is generated.
-2. Modifying the helper to return the key (5-line change), OR
-3. Generating a fresh key in this test and minting test ETH to it via the simulated backend.
-
-Document any adaptations.
+(Note: existing `deployContractOnSim` already mints token #0 to deployer in its body. The first user-driven Mint() in this test produces token #1.)
 
 - [ ] **Step 1.2: Run, verify FAIL**
 
@@ -233,17 +225,31 @@ func (p *Provider) Mint(ctx context.Context, name, systemPromptURI string) (inft
 		Name:            name,
 		SystemPromptURI: systemPromptURI,
 		Owner:           p.auth.From.Hex(),
+		MintTxHash:      tx.Hash().Hex(),
 	}, nil
 }
 ```
 
 Add the `types` import at the top of `zg_7857.go` (`"github.com/ethereum/go-ethereum/core/types"`) if not already present.
 
-Check `inft.Persona` struct fields. If `Owner` field doesn't exist, add it to `era-brain/inft/provider.go`:
+**Required struct extension.** Read existing `inft.Persona`:
 ```bash
-grep -n "type Persona struct" era-brain/inft/provider.go
+grep -n "type Persona struct" -A 10 era-brain/inft/provider.go
 ```
-Read the existing struct. If missing `Owner`, add it. If present with different name (e.g., `OwnerAddr`), use that.
+
+The existing struct (M7-A.2) has `Name`, `TokenID`, `SystemPromptURI`. Phase 1 must extend it with `Owner string` and `MintTxHash string`. Edit `era-brain/inft/provider.go`:
+
+```go
+type Persona struct {
+	TokenID         string
+	Name            string
+	SystemPromptURI string
+	Owner           string  // NEW (M7-F.1) — 0x... wallet that owns the token
+	MintTxHash      string  // NEW (M7-F.1) — for DM-rendering chainscan link
+}
+```
+
+If existing fields differ, use the existing names — but the two new fields MUST be added since Phase 3's `Queue.MintPersona` and the Telegram DM both consume them.
 
 - [ ] **Step 1.4: Run unit tests, verify PASS**
 
@@ -633,6 +639,7 @@ type PersonaRegistry interface {
 	Lookup(ctx context.Context, name string) (Persona, error)  // returns ErrPersonaNotFound
 	List(ctx context.Context) ([]Persona, error)
 	Insert(ctx context.Context, p Persona) error              // returns ErrPersonaNameTaken on duplicate
+	UpdateENSSubname(ctx context.Context, name, subname string) error // for Phase 5 ENS reconcile
 }
 
 var (
@@ -689,6 +696,14 @@ func (r *Repo) GetPersonaByName(ctx context.Context, name string) (queue.Persona
 	p.ENSSubname = ensSubname.String
 	p.Description = description.String
 	return p, nil
+}
+
+func (r *Repo) UpdatePersonaENSSubname(ctx context.Context, name, subname string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE personas SET ens_subname = ? WHERE name = ?`, subname, name)
+	if err != nil {
+		return fmt.Errorf("update persona ens_subname: %w", err)
+	}
+	return nil
 }
 
 func (r *Repo) ListPersonas(ctx context.Context) ([]queue.Persona, error) {
@@ -748,6 +763,9 @@ func (r *Repo) Insert(ctx context.Context, p queue.Persona) error {
 }
 func (r *Repo) List(ctx context.Context) ([]queue.Persona, error) {
 	return r.ListPersonas(ctx)
+}
+func (r *Repo) UpdateENSSubname(ctx context.Context, name, subname string) error {
+	return r.UpdatePersonaENSSubname(ctx, name, subname)
 }
 ```
 
@@ -911,7 +929,110 @@ go test ./internal/telegram/ -run "TestHandle_Persona" -count=1 -v 2>&1 | head -
 
 Expected: build failure (`undefined: PersonaMintResult`, `undefined: stubOps.MintPersona`, etc.). Exit non-zero.
 
-### 3B: Implement Ops extension + handler routing
+### 3B: Wire queue dependencies BEFORE the orchestration step
+
+- [ ] **Step 3.4a: Extend `INFTProvider` interface with `Mint`**
+
+In `internal/queue/queue.go`, modify the existing M7-D.2 interface:
+
+```go
+// INFTProvider is the queue's view of the iNFT registry.
+type INFTProvider interface {
+	RecordInvocation(ctx context.Context, tokenID, receiptHashHex string) error
+	Mint(ctx context.Context, name, systemPromptURI string) (inft.Persona, error)  // NEW (M7-F.3)
+}
+```
+
+Update existing `stubINFT` in `internal/queue/queue_run_test.go` (around line 888-905) to also implement `Mint`:
+
+```go
+func (s *stubINFT) Mint(_ context.Context, _, _ string) (inft.Persona, error) {
+	// queue_run_test doesn't exercise mint; existing tests don't care.
+	return inft.Persona{}, nil
+}
+```
+
+Add the `inft` import to the test file if not present.
+
+`*zg_7857.Provider` already implements both methods after Phase 1, so production wiring `q.SetINFT(prov)` keeps working.
+
+Run `go vet ./...` + `go test ./internal/queue/... -count=1` to confirm the existing M7-D.2 tests still pass with the extended interface.
+
+- [ ] **Step 3.4b: Add `ENSResolver` interface + `Queue.ens` field + setter**
+
+`Queue.MintPersona` (next step) needs to call ENS write operations. The notifier already has its own `ENSResolver` interface (in `cmd/orchestrator/main.go`) but that one is read-only. Define a queue-side write interface:
+
+```go
+// ENSWriter is the queue's view of the ENS provider — adds + reads subnames.
+// Implemented by *ens.Provider after M7-E.1.
+type ENSWriter interface {
+	EnsureSubname(ctx context.Context, label string) error
+	SetTextRecord(ctx context.Context, label, key, value string) error
+	ParentName() string
+}
+```
+
+Add field + setter on `Queue`:
+
+```go
+type Queue struct {
+	// ... existing fields ...
+	ensWriter ENSWriter // may be nil
+}
+
+func (q *Queue) SetENSWriter(w ENSWriter) { q.ensWriter = w }
+```
+
+Production wiring (Phase 5) calls `q.SetENSWriter(ensProv)` — `*ens.Provider` already implements all three methods after M7-E.1, so it satisfies `ENSWriter` implicitly.
+
+Don't conflate this with the notifier's `ENSResolver` (read-only, used by ensFooter). Both interfaces co-exist; the same `*ens.Provider` instance satisfies both.
+
+- [ ] **Step 3.4c: Extract `syncPersonaENSRecords` helper**
+
+Create `internal/queue/persona_ens.go`:
+
+```go
+package queue
+
+import (
+	"context"
+	"fmt"
+)
+
+// SyncPersonaENSRecords runs EnsureSubname + 4 setText for a single persona.
+// Used by both Queue.MintPersona and the boot-time ENS reconcile pass (M7-F.5).
+// Errors are returned to the caller; logging is the caller's responsibility.
+//
+// Exported (capital S) so the orchestrator's reconcile pass can call it
+// without copy-pasting the body.
+func SyncPersonaENSRecords(ctx context.Context, ens ENSWriter, p Persona, inftAddr string) error {
+	if ens == nil {
+		return nil // ENS not wired — no-op
+	}
+	if err := ens.EnsureSubname(ctx, p.Name); err != nil {
+		return fmt.Errorf("ensureSubname: %w", err)
+	}
+	desc := p.Description
+	if len(desc) > 60 {
+		desc = desc[:60]
+	}
+	for k, v := range map[string]string{
+		"inft_addr":      inftAddr,
+		"inft_token_id":  p.TokenID,
+		"zg_storage_uri": p.SystemPromptURI,
+		"description":    desc,
+	} {
+		if err := ens.SetTextRecord(ctx, p.Name, k, v); err != nil {
+			return fmt.Errorf("setText %s: %w", k, err)
+		}
+	}
+	return nil
+}
+```
+
+This helper is shared between `Queue.MintPersona` (Phase 3) and `reconcileENS` (Phase 5).
+
+### 3C: Implement Ops extension + handler routing
 
 - [ ] **Step 3.4: Add `PersonaMintResult` + extend `Ops` interface**
 
@@ -1075,55 +1196,48 @@ func (q *Queue) MintPersona(ctx context.Context, name, prompt string) (telegram.
 		return telegram.PersonaMintResult{}, fmt.Errorf("upload prompt: %w", err)
 	}
 
-	// 2. Mint iNFT
-	persona, err := q.inftMint(ctx, name, uri) // see below; thin wrapper around q.inft
+	// 2. Mint iNFT (q.inft now has Mint per Step 3.4a)
+	if q.inft == nil {
+		return telegram.PersonaMintResult{}, errors.New("iNFT not wired (PI_ZG_INFT_CONTRACT_ADDRESS missing)")
+	}
+	persona, err := q.inft.Mint(ctx, name, uri)
 	if err != nil {
 		return telegram.PersonaMintResult{}, fmt.Errorf("mint: %w", err)
 	}
 
-	// 3. ENS subname (best-effort if q.ens != nil)
-	ensSubname := ""
-	if q.ens != nil {
-		if err := q.ens.EnsureSubname(ctx, name); err != nil {
-			slog.Warn("persona-mint ens ensure", "name", name, "err", err)
-		} else {
-			parent := q.ens.ParentName()
-			ensSubname = name + "." + parent
-			inftAddr := os.Getenv("PI_ZG_INFT_CONTRACT_ADDRESS")
-			desc := prompt
-			if len(desc) > 60 {
-				desc = desc[:60]
-			}
-			for k, v := range map[string]string{
-				"inft_addr":      inftAddr,
-				"inft_token_id":  persona.TokenID,
-				"zg_storage_uri": uri,
-				"description":    desc,
-			} {
-				if err := q.ens.SetTextRecord(ctx, name, k, v); err != nil {
-					slog.Warn("persona-mint ens setText", "name", name, "key", k, "err", err)
-				}
-			}
-		}
+	// Build the persona row early so syncPersonaENSRecords + Insert share fields.
+	desc := prompt
+	if len(desc) > 60 {
+		desc = desc[:60]
 	}
-
-	// 4. Insert into SQLite
 	row := Persona{
 		TokenID:         persona.TokenID,
 		Name:            name,
 		OwnerAddr:       persona.Owner,
 		SystemPromptURI: uri,
-		ENSSubname:      ensSubname,
-		Description:     descTruncate(prompt, 60),
+		Description:     desc,
 	}
+
+	// 3. ENS subname (best-effort if q.ensWriter != nil — see Step 3.4b/c)
+	if q.ensWriter != nil {
+		inftAddr := os.Getenv("PI_ZG_INFT_CONTRACT_ADDRESS")
+		if err := SyncPersonaENSRecords(ctx, q.ensWriter, row, inftAddr); err != nil {
+			slog.Warn("persona-mint ens sync", "name", name, "err", err)
+			// don't set row.ENSSubname — leave empty so Phase 5 reconcile retries
+		} else {
+			row.ENSSubname = name + "." + q.ensWriter.ParentName()
+		}
+	}
+
+	// 4. Insert into SQLite
 	if err := q.personas.Insert(ctx, row); err != nil {
 		return telegram.PersonaMintResult{}, fmt.Errorf("registry insert: %w", err)
 	}
 
 	return telegram.PersonaMintResult{
 		TokenID:         persona.TokenID,
-		MintTxHash:      "", // TODO: surface tx hash from Mint impl (see §10 risk #2 in spec)
-		ENSSubname:      ensSubname,
+		MintTxHash:      persona.MintTxHash, // populated by Phase 1's Mint impl (Step 1.3)
+		ENSSubname:      row.ENSSubname,
 		SystemPromptURI: uri,
 	}, nil
 }
@@ -1131,31 +1245,9 @@ func (q *Queue) MintPersona(ctx context.Context, name, prompt string) (telegram.
 func (q *Queue) ListPersonas(ctx context.Context) ([]Persona, error) {
 	return q.personas.List(ctx)
 }
-
-func descTruncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
-}
 ```
 
-⚠ **Tx hash plumbing.** `Provider.Mint` returns `inft.Persona{}` — no tx hash. To surface in DM, extend `inft.Persona` with `MintTxHash string` and update Phase 1's Mint impl to populate it from `tx.Hash().Hex()`. Add this before merging Phase 3.
-
-⚠ **`inftMint` wrapper.** `q.inft` is the `INFTProvider` interface (M7-D.2 — only has `RecordInvocation`). Phase 3 needs to extend `INFTProvider` with `Mint(ctx, name, uri) (inft.Persona, error)`, OR the queue needs a separate `INFTMinter` interface, OR queue stores `*zg_7857.Provider` directly. **Recommended**: extend `INFTProvider`:
-
-```go
-type INFTProvider interface {
-	RecordInvocation(ctx context.Context, tokenID, receiptHashHex string) error
-	Mint(ctx context.Context, name, systemPromptURI string) (inft.Persona, error)
-}
-```
-
-The existing M7-D.2 wiring (`q.SetINFT(prov)`) still works — `*zg_7857.Provider` already has both methods after Phase 1.
-
-Update existing M7-D.2 stubs (`stubINFT` in `queue_run_test.go`) to also implement `Mint` — return zero value or error, doesn't matter for those tests.
-
-Wire all three dependencies in main.go (Phase 5; Phase 3 is the queue API only).
+(`INFTProvider.Mint` extension + `ENSWriter` interface + `syncPersonaENSRecords` helper were all introduced in Steps 3.4a–c above. Production wiring of `q.SetENSWriter(ensProv)` + `q.SetPersonas(repo)` + `q.SetPromptStorage(storageClient)` lands in Phase 5.)
 
 - [ ] **Step 3.7: Run, verify PASS**
 
@@ -1475,29 +1567,39 @@ In `RunNext`, after the task is loaded:
 var coderTokenIDForRecord = coderTokenID  // existing default
 var customPrompt string
 if t.PersonaName != "" {
-	if q.personas == nil {
-		// Persona requested but registry not wired — fail task.
-		q.failTask(ctx, t.ID, "persona registry not wired")
-		return true, nil
-	}
-	persona, err := q.personas.Lookup(ctx, t.PersonaName)
-	if errors.Is(err, ErrPersonaNotFound) {
-		q.failTask(ctx, t.ID, fmt.Sprintf("unknown persona '%s'; run /personas", t.PersonaName))
-		return true, nil
-	}
-	if err != nil {
-		q.failTask(ctx, t.ID, fmt.Sprintf("persona lookup failed: %v", err))
-		return true, nil
-	}
-	if q.zgStorage != nil {
-		prompt, err := q.zgStorage.FetchPrompt(ctx, persona.SystemPromptURI)
-		if err != nil {
-			q.failTask(ctx, t.ID, fmt.Sprintf("persona prompt fetch failed: %v", err))
-			return true, nil
+	failReason := ""
+	switch {
+	case q.personas == nil:
+		failReason = "persona registry not wired"
+	default:
+		persona, err := q.personas.Lookup(ctx, t.PersonaName)
+		switch {
+		case errors.Is(err, ErrPersonaNotFound):
+			failReason = fmt.Sprintf("unknown persona '%s'; run /personas", t.PersonaName)
+		case err != nil:
+			failReason = fmt.Sprintf("persona lookup failed: %v", err)
+		case q.zgStorage == nil:
+			failReason = "0G prompt storage not wired"
+		default:
+			prompt, ferr := q.zgStorage.FetchPrompt(ctx, persona.SystemPromptURI)
+			if ferr != nil {
+				failReason = fmt.Sprintf("persona prompt fetch failed: %v", ferr)
+			} else {
+				customPrompt = prompt
+				coderTokenIDForRecord = persona.TokenID
+			}
 		}
-		customPrompt = prompt
 	}
-	coderTokenIDForRecord = persona.TokenID
+	if failReason != "" {
+		// q.repo.FailTask is the existing helper at internal/db/repo.go:54
+		if err := q.repo.FailTask(ctx, t.ID, failReason); err != nil {
+			slog.Error("FailTask", "task_id", t.ID, "err", err)
+		}
+		if q.notifier != nil {
+			q.notifier.NotifyFailed(ctx, t.ID, failReason)
+		}
+		return true, nil
+	}
 }
 
 // When constructing the Pi runner's description, prepend customPrompt if non-empty.
@@ -1804,18 +1906,28 @@ func reconcileFromChain(
 }
 
 // reconcileENS retries ENS subname registration for personas with empty ens_subname.
-func reconcileENS(ctx context.Context, registry queue.PersonaRegistry, ensProv ens.Resolver) error {
+// Uses the same `syncPersonaENSRecords` helper as Queue.MintPersona (defined in
+// internal/queue/persona_ens.go in Phase 3 step 3.4c). This ensures the records
+// written at boot are byte-identical to the records written at /persona-mint time.
+func reconcileENS(ctx context.Context, registry queue.PersonaRegistry, ens queue.ENSWriter) error {
 	all, err := registry.List(ctx)
 	if err != nil { return err }
+	inftAddr := os.Getenv("PI_ZG_INFT_CONTRACT_ADDRESS")
 	for _, p := range all {
 		if p.ENSSubname != "" { continue }
-		if err := ensProv.EnsureSubname(ctx, p.Name); err != nil {
-			slog.Warn("reconcile: ens ensure failed", "name", p.Name, "err", err)
+		// syncPersonaENSRecords is exported from internal/queue/persona_ens.go.
+		// If it's lowercase (file-internal), export it as `SyncPersonaENSRecords`
+		// or move it to a separate exported helper.
+		if err := queue.SyncPersonaENSRecords(ctx, ens, p, inftAddr); err != nil {
+			slog.Warn("reconcile: ens sync failed", "name", p.Name, "err", err)
 			continue
 		}
-		// setText for the 4 records (same as Phase 3's MintPersona path)
-		// ... implementation detail: factor a `syncPersonaENSRecords` helper
-		// shared between MintPersona and reconcileENS
+		// Update SQLite row with the new ens_subname so future boots skip it.
+		// (Add a small repo helper UpdatePersonaENSSubname(ctx, name, subname) — 5 lines.)
+		full := p.Name + "." + ens.ParentName()
+		if err := registry.UpdateENSSubname(ctx, p.Name, full); err != nil {
+			slog.Warn("reconcile: persisting ens_subname failed", "name", p.Name, "err", err)
+		}
 	}
 	return nil
 }
