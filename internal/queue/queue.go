@@ -17,6 +17,7 @@ import (
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
 	"github.com/vaibhav0806/era/internal/githubpr"
+	"github.com/vaibhav0806/era/internal/persona"
 	"github.com/vaibhav0806/era/internal/progress"
 	"github.com/vaibhav0806/era/internal/swarm"
 	"github.com/vaibhav0806/era/internal/telegram"
@@ -66,6 +67,34 @@ type Swarm interface {
 type INFTProvider interface {
 	RecordInvocation(ctx context.Context, tokenID, receiptHashHex string) error
 }
+
+// Persona is the local-DB row for a minted PersonaNFT. The registry is the
+// source of truth on-chain; this is era's cached view used to resolve
+// /mention <name> → token_id at task-creation time. Re-exported from the
+// shared internal/persona package to avoid an internal/db ↔ internal/queue
+// import cycle while keeping the queue-facing name.
+type Persona = persona.Persona
+
+// PersonaRegistry is the queue's view of the persona store. Implementations:
+// *db.Repo (prod), in-memory stub (tests). Lookup/List are read paths;
+// Insert is called after on-chain mint succeeds; UpdateENSSubname patches
+// the row when the ENS subname is registered (post-mint, may fail/retry).
+type PersonaRegistry interface {
+	Lookup(ctx context.Context, name string) (Persona, error)
+	List(ctx context.Context) ([]Persona, error)
+	Insert(ctx context.Context, p Persona) error
+	UpdateENSSubname(ctx context.Context, name, subname string) error
+}
+
+// Sentinel errors returned by PersonaRegistry implementations. Re-exported
+// from internal/persona so call sites can keep using queue.ErrPersonaXxx.
+var (
+	ErrPersonaNotFound  = persona.ErrPersonaNotFound
+	ErrPersonaNameTaken = persona.ErrPersonaNameTaken
+)
+
+// Compile-time check that *db.Repo satisfies PersonaRegistry.
+var _ PersonaRegistry = (*db.Repo)(nil)
 
 // NeedsReviewArgs bundles the approval-DM payload. Lives in queue so tests
 // can assert shape without importing telegram or diffscan types up there.
