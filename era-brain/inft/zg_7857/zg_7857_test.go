@@ -85,7 +85,7 @@ func TestProvider_RecordInvocation_HexDecodeError(t *testing.T) {
 	require.Equal(t, byte(0xff), hash[31])
 }
 
-func TestProvider_MintAndLookupReturnNotImplemented(t *testing.T) {
+func TestProvider_LookupReturnsNotImplemented(t *testing.T) {
 	p, err := zg_7857.New(zg_7857.Config{
 		ContractAddress: "0x0000000000000000000000000000000000000001",
 		EVMRPCURL:       "http://127.0.0.1:1",
@@ -97,9 +97,51 @@ func TestProvider_MintAndLookupReturnNotImplemented(t *testing.T) {
 	}
 	defer p.Close()
 
-	_, err = p.Mint(context.Background(), "planner", "ipfs://x")
-	require.ErrorIs(t, err, zg_7857.ErrNotImplemented)
-
 	_, err = p.Lookup(context.Background(), "0xabc", "planner")
 	require.ErrorIs(t, err, zg_7857.ErrNotImplemented)
+}
+
+func TestProvider_Mint_HappyPath(t *testing.T) {
+	backend, contract, auth, key, addr := deployContractOnSim(t)
+
+	keyHex := common.Bytes2Hex(crypto.FromECDSA(key))
+	p, err := zg_7857.NewWithClient(zg_7857.Config{
+		ContractAddress: addr.Hex(),
+		PrivateKey:      keyHex,
+		ChainID:         1337,
+	}, backend.Client())
+	require.NoError(t, err)
+	t.Cleanup(p.Close)
+
+	// simulated.Backend doesn't auto-mine — Mint() blocks on bind.WaitMined,
+	// so we drive Commit() in parallel with the Mint call.
+	done := make(chan struct{})
+	go func() {
+		// Allow Mint to submit the tx before we commit.
+		// A few Commit()s in a row covers any timing skew.
+		for i := 0; i < 10; i++ {
+			backend.Commit()
+		}
+		close(done)
+	}()
+
+	persona, err := p.Mint(context.Background(), "rustacean", "ipfs://prompt-blob")
+	<-done
+	require.NoError(t, err)
+	require.NotEmpty(t, persona.TokenID, "token ID should be populated from Transfer event")
+	require.Equal(t, "rustacean", persona.Name)
+	require.Equal(t, "ipfs://prompt-blob", persona.SystemPromptURI)
+	require.Equal(t, auth.From.Hex(), persona.OwnerAddr)
+	require.NotEmpty(t, persona.MintTxHash, "tx hash should be populated for DM rendering")
+	require.Equal(t, addr.Hex(), persona.ContractAddr)
+
+	tokenID, ok := new(big.Int).SetString(persona.TokenID, 10)
+	require.True(t, ok)
+	owner, err := contract.OwnerOf(&bind.CallOpts{}, tokenID)
+	require.NoError(t, err)
+	require.Equal(t, auth.From, owner)
+
+	uri, err := contract.TokenURI(&bind.CallOpts{}, tokenID)
+	require.NoError(t, err)
+	require.Equal(t, "ipfs://prompt-blob", uri)
 }

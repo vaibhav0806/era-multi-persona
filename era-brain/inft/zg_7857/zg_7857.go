@@ -1,8 +1,5 @@
 // Package zg_7857 is an inft.Registry impl wrapping abigen bindings for the
 // EraPersonaINFT contract deployed on 0G Galileo testnet.
-//
-// M7-D.2 scope: only RecordInvocation is implemented. Mint and Lookup return
-// ErrNotImplemented (deferred to M7-D.3+).
 package zg_7857
 
 import (
@@ -16,6 +13,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
@@ -23,7 +21,7 @@ import (
 	"github.com/vaibhav0806/era-multi-persona/era-brain/inft/zg_7857/bindings"
 )
 
-var ErrNotImplemented = errors.New("zg_7857: not implemented in M7-D.2 (deferred)")
+var ErrNotImplemented = errors.New("zg_7857: not implemented")
 
 type Config struct {
 	ContractAddress string
@@ -32,9 +30,20 @@ type Config struct {
 	ChainID         int64
 }
 
+// ContractClient is the subset of *ethclient.Client + simulated.Client we need.
+// Both satisfy bind.ContractBackend and bind.DeployBackend; in tests we pass a
+// simulated.Client, in prod a *ethclient.Client.
+type ContractClient interface {
+	bind.ContractBackend
+	bind.DeployBackend
+}
+
 type Provider struct {
-	cfg      Config
-	client   *ethclient.Client
+	cfg Config
+
+	client       ContractClient
+	dialedClient *ethclient.Client
+
 	contract *bindings.EraPersonaINFT
 	auth     *bind.TransactOpts
 	privKey  *ecdsa.PrivateKey
@@ -47,22 +56,34 @@ func New(cfg Config) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("zg_7857 dial: %w", err)
 	}
-
-	privKey, err := crypto.HexToECDSA(strings.TrimPrefix(cfg.PrivateKey, "0x"))
+	p, err := newWithBackend(cfg, client)
 	if err != nil {
 		client.Close()
+		return nil, err
+	}
+	p.dialedClient = client
+	return p, nil
+}
+
+// NewWithClient is a test entry point: skip dial, use the provided client.
+// Production callers use New.
+func NewWithClient(cfg Config, client ContractClient) (*Provider, error) {
+	return newWithBackend(cfg, client)
+}
+
+func newWithBackend(cfg Config, client ContractClient) (*Provider, error) {
+	privKey, err := crypto.HexToECDSA(strings.TrimPrefix(cfg.PrivateKey, "0x"))
+	if err != nil {
 		return nil, fmt.Errorf("zg_7857 priv key: %w", err)
 	}
 
 	contract, err := bindings.NewEraPersonaINFT(common.HexToAddress(cfg.ContractAddress), client)
 	if err != nil {
-		client.Close()
 		return nil, fmt.Errorf("zg_7857 bind contract: %w", err)
 	}
 
 	auth, err := bind.NewKeyedTransactorWithChainID(privKey, big.NewInt(cfg.ChainID))
 	if err != nil {
-		client.Close()
 		return nil, fmt.Errorf("zg_7857 auth: %w", err)
 	}
 
@@ -70,8 +91,8 @@ func New(cfg Config) (*Provider, error) {
 }
 
 func (p *Provider) Close() {
-	if p.client != nil {
-		p.client.Close()
+	if p.dialedClient != nil {
+		p.dialedClient.Close()
 	}
 }
 
@@ -96,8 +117,55 @@ func (p *Provider) RecordInvocation(ctx context.Context, tokenID string, receipt
 	return nil
 }
 
-func (p *Provider) Mint(_ context.Context, _, _ string) (inft.Persona, error) {
-	return inft.Persona{}, ErrNotImplemented
+// Mint creates a new persona iNFT token, owned by the orchestrator wallet.
+// systemPromptURI becomes the contract's tokenURI for the new token.
+// Returns the auto-incremented token ID + persona metadata.
+//
+// Calls EraPersonaINFT.mint(address to, string memory uri) — onlyOwner.
+// Parses the Transfer(from=0x0, to=signer, tokenId) event from the receipt
+// to extract the auto-incremented token ID.
+func (p *Provider) Mint(ctx context.Context, name, systemPromptURI string) (inft.Persona, error) {
+	auth := *p.auth
+	auth.Context = ctx
+
+	tx, err := p.contract.Mint(&auth, p.auth.From, systemPromptURI)
+	if err != nil {
+		return inft.Persona{}, fmt.Errorf("zg_7857 mint tx: %w", err)
+	}
+
+	rc, err := bind.WaitMined(ctx, p.client, tx)
+	if err != nil {
+		return inft.Persona{}, fmt.Errorf("zg_7857 mint waitmined: %w", err)
+	}
+	if rc.Status != types.ReceiptStatusSuccessful {
+		return inft.Persona{}, fmt.Errorf("zg_7857 mint reverted: txHash=%s", tx.Hash().Hex())
+	}
+
+	// Find Transfer(from=0x0, to=signer) in receipt logs.
+	var tokenID *big.Int
+	for _, log := range rc.Logs {
+		ev, perr := p.contract.ParseTransfer(*log)
+		if perr != nil {
+			continue // not a Transfer event
+		}
+		zero := common.Address{}
+		if ev.From == zero && ev.To == p.auth.From {
+			tokenID = ev.TokenId
+			break
+		}
+	}
+	if tokenID == nil {
+		return inft.Persona{}, fmt.Errorf("zg_7857 mint: no matching Transfer event in receipt; txHash=%s", tx.Hash().Hex())
+	}
+
+	return inft.Persona{
+		TokenID:         tokenID.String(),
+		Name:            name,
+		SystemPromptURI: systemPromptURI,
+		OwnerAddr:       p.auth.From.Hex(),
+		ContractAddr:    p.cfg.ContractAddress,
+		MintTxHash:      tx.Hash().Hex(),
+	}, nil
 }
 
 func (p *Provider) Lookup(_ context.Context, _, _ string) (inft.Persona, error) {

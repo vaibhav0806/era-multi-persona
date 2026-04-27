@@ -12,6 +12,7 @@ type Persona struct {
 	ContractAddr    string
 	OwnerAddr       string
 	SystemPromptURI string // 0G Storage URI to the persona's system prompt blob (M7-B)
+	MintTxHash      string // tx hash of the mint, populated by Registry.Mint (M7-F.1) — for DM-rendering chainscan link
 }
 
 // Registry exposes mint + lookup + invocation-recording. M7-A defines the
