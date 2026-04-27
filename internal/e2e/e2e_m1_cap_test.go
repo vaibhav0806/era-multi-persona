@@ -49,7 +49,7 @@ func TestE2E_M1_RunawayAbortedByIterationCap(t *testing.T) {
 	id, err := q.CreateTask(ctx,
 		"create 20 different files in this repo, each named NOTE_<n>.md, "+
 			"each containing a 5-paragraph essay about a different historical event. "+
-			"commit after each file is written.", "", "default")
+			"commit after each file is written.", "", "default", "")
 	require.NoError(t, err)
 
 	ran, runErr := q.RunNext(ctx)

@@ -14,7 +14,7 @@ func TestApproveTask_LabelsAndCommentsPR(t *testing.T) {
 	pc := &fakePRCreator{}
 	q.SetPRCreator(pc)
 
-	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default")
+	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default", "")
 	_ = repo.CompleteTask(ctx, task.ID, "agent/5/b", "s", 0, 0)
 	_ = repo.SetPRNumber(ctx, task.ID, 7)
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")
@@ -43,7 +43,7 @@ func TestApproveTask_NullPRNumber_SkipsGH(t *testing.T) {
 	pc := &fakePRCreator{}
 	q.SetPRCreator(pc)
 
-	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default")
+	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default", "")
 	_ = repo.CompleteTask(ctx, task.ID, "agent/5/b", "s", 0, 0)
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")
 	// No SetPRNumber — pr_number stays NULL.
@@ -63,7 +63,7 @@ func TestApproveTask_LabelErrorLoggedButNotBlocking(t *testing.T) {
 	pc := &fakePRCreator{labelErr: errors.New("network blip")}
 	q.SetPRCreator(pc)
 
-	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default")
+	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default", "")
 	_ = repo.CompleteTask(ctx, task.ID, "agent/5/b", "s", 0, 0)
 	_ = repo.SetPRNumber(ctx, task.ID, 7)
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")
@@ -90,7 +90,7 @@ func TestApproveTask_IdempotentOnAlreadyApproved(t *testing.T) {
 	pc := &fakePRCreator{}
 	q.SetPRCreator(pc)
 
-	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default")
+	task, _ := repo.CreateTask(ctx, "x", "owner/repo", "default", "")
 	_ = repo.SetStatus(ctx, task.ID, "approved")
 
 	require.NoError(t, q.ApproveTask(ctx, task.ID))

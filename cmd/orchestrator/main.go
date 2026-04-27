@@ -366,7 +366,7 @@ func (n *tgNotifier) NotifyCompleted(ctx context.Context, a queue.CompletedArgs)
 		body += "\n" + rev
 	}
 
-	body += ensFooter(ctx, n.ens)
+	body += ensFooter(ctx, n.ens, a.PersonaLabels)
 
 	msgID, err := n.client.SendMessage(ctx, n.chatID, body)
 	if err != nil {
@@ -416,7 +416,7 @@ func (n *tgNotifier) NotifyProgress(ctx context.Context, id int64, ev queue.Prog
 }
 
 func (n *tgNotifier) NotifyNeedsReview(ctx context.Context, a queue.NeedsReviewArgs) {
-	body := formatNeedsReviewMessage(a) + ensFooter(ctx, n.ens)
+	body := formatNeedsReviewMessage(a) + ensFooter(ctx, n.ens, a.PersonaLabels)
 
 	buttons := [][]telegram.InlineButton{
 		{
@@ -468,13 +468,20 @@ func formatNeedsReviewMessage(a queue.NeedsReviewArgs) string {
 // ensFooter renders the "personas:" section appended to completion / review DMs.
 // Returns "" when ens is nil OR any single read fails OR any persona's records
 // are missing (partial data → empty string, never partial footer).
-func ensFooter(ctx context.Context, ens ENSResolver) string {
+//
+// labels is the per-task list of ENS labels to look up (e.g. ["planner",
+// "rustacean", "reviewer"] when a custom persona was used). Empty/nil labels
+// fall back to the legacy ["planner","coder","reviewer"] for backwards compat.
+func ensFooter(ctx context.Context, ens ENSResolver, labels []string) string {
 	if ens == nil {
 		return ""
 	}
+	if len(labels) == 0 {
+		labels = []string{"planner", "coder", "reviewer"}
+	}
 	type row struct{ label, addr, tokenID string }
-	rows := make([]row, 0, 3)
-	for _, label := range []string{"planner", "coder", "reviewer"} {
+	rows := make([]row, 0, len(labels))
+	for _, label := range labels {
 		addr, err := ens.ReadTextRecord(ctx, label, "inft_addr")
 		if err != nil {
 			return ""

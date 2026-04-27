@@ -26,7 +26,7 @@ func TestStats_MixedStatuses_CountsSuccessRate(t *testing.T) {
 	// seed creates a task and completes it; CompleteTask always sets status="completed",
 	// so we call SetStatus("failed") after CompleteTask to override for failed tasks.
 	seed := func(status string, tokens, cents int64) {
-		task, err := repo.CreateTask(ctx, "x", "", "default")
+		task, err := repo.CreateTask(ctx, "x", "", "default", "")
 		require.NoError(t, err)
 		require.NoError(t, repo.CompleteTask(ctx, task.ID, "br", "s", tokens, cents))
 		if status != "completed" {

@@ -2,7 +2,9 @@ package queue
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,9 +29,8 @@ import (
 
 const (
 	plannerTokenID  = "0"
+	coderTokenID    = "1"
 	reviewerTokenID = "2"
-	// coder tokenID 1 skipped — Pi-in-Docker is unsealed per M7-C scope;
-	// no LLMPersona receipt to record.
 )
 
 // TokenSource yields a fresh (or cached-still-valid) installation token for
@@ -135,6 +136,7 @@ type NeedsReviewArgs struct {
 	ReviewerCritique string
 	ReviewerDecision string // "approve" or "flag"
 	Receipts         []brain.Receipt // [planner, coder, reviewer] in order
+	PersonaLabels    []string        // ENS labels for ensFooter; empty → defaults
 }
 
 // CompletedArgs bundles the completion-DM payload so we can extend persona
@@ -150,7 +152,8 @@ type CompletedArgs struct {
 	Receipts         []brain.Receipt // [planner, coder, reviewer] in order
 	PlannerPlan      string
 	ReviewerCritique string
-	ReviewerDecision string // "approve" or "flag"
+	ReviewerDecision string   // "approve" or "flag"
+	PersonaLabels    []string // ENS labels for ensFooter; empty → defaults
 }
 
 // Notifier is called by RunNext when a task finishes. All methods are
@@ -263,11 +266,11 @@ func (q *Queue) CreateAskTask(ctx context.Context, desc, targetRepo string) (int
 	return task.ID, nil
 }
 
-func (q *Queue) CreateTask(ctx context.Context, desc, targetRepo, profile string) (int64, error) {
+func (q *Queue) CreateTask(ctx context.Context, desc, targetRepo, profile, personaName string) (int64, error) {
 	if profile == "" {
 		profile = "default"
 	}
-	t, err := q.repo.CreateTask(ctx, desc, targetRepo, profile)
+	t, err := q.repo.CreateTask(ctx, desc, targetRepo, profile, personaName)
 	if err != nil {
 		return 0, err
 	}
@@ -354,6 +357,40 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 		}
 	}
 
+	// Resolve custom persona if the task was created with --persona=<name>.
+	// On failure we fail the task before running planner — there's no point
+	// burning planner tokens on a task whose persona is unresolvable.
+	var customPrompt string
+	coderTokenIDForRecord := coderTokenID // default "1"; overridden by custom persona
+	if t.PersonaName != "" {
+		failPersona := func(reason string) (bool, error) {
+			_ = q.repo.AppendEvent(ctx, t.ID, "persona_resolve_failed", quoteJSON(reason))
+			if ferr := q.repo.FailTask(ctx, t.ID, reason); ferr != nil {
+				return true, fmt.Errorf("fail task: %w", ferr)
+			}
+			if q.notifier != nil {
+				q.notifier.NotifyFailed(ctx, t.ID, reason)
+			}
+			return true, nil
+		}
+		if q.personas == nil {
+			return failPersona(fmt.Sprintf("persona %q requested but registry not wired", t.PersonaName))
+		}
+		p, err := q.personas.Lookup(ctx, t.PersonaName)
+		if err != nil {
+			return failPersona(fmt.Sprintf("persona %q: %v", t.PersonaName, err))
+		}
+		if q.zgStorage == nil {
+			return failPersona(fmt.Sprintf("persona %q: prompt storage not wired", t.PersonaName))
+		}
+		prompt, err := q.zgStorage.FetchPrompt(ctx, p.SystemPromptURI)
+		if err != nil {
+			return failPersona(fmt.Sprintf("persona %q: fetch prompt: %v", t.PersonaName, err))
+		}
+		customPrompt = prompt
+		coderTokenIDForRecord = p.TokenID
+	}
+
 	// Plan: run planner persona before the container starts.
 	var planText string
 	var plannerReceipt brain.Receipt
@@ -382,8 +419,13 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 
 	effectiveDesc := swarm.InjectPlan(t.Description, planText)
 
+	piDesc := effectiveDesc
+	if customPrompt != "" {
+		piDesc = "PERSONA SYSTEM PROMPT:\n" + customPrompt + "\n\nTASK:\n" + effectiveDesc
+	}
+
 	readOnly := t.ReadOnly == 1
-	branch, summary, tokens, costCents, audits, runErr := q.runner.Run(ctx, t.ID, effectiveDesc, ghToken, effectiveRepo,
+	branch, summary, tokens, costCents, audits, runErr := q.runner.Run(ctx, t.ID, piDesc, ghToken, effectiveRepo,
 		profile.MaxIter, profile.MaxCents, profile.MaxWallSec, readOnly, progressCB)
 	if runErr != nil {
 		if q.running != nil && q.running.WasKilled(t.ID) {
@@ -410,6 +452,19 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 	_ = q.repo.AppendEvent(ctx, t.ID, "completed", "{}")
 	if err := q.repo.CompleteTask(ctx, t.ID, branch, summary, tokens, int64(costCents)); err != nil {
 		return true, fmt.Errorf("complete task: %w", err)
+	}
+
+	// Coder recordInvocation: synthesize a deterministic stand-in hash since
+	// Pi runs unsealed inside its container — era-brain has no LLMPersona
+	// receipt for it. The hash binds (taskID, persona, branch, summary) so
+	// repeated runs of the same coder produce different on-chain entries.
+	if q.inft != nil {
+		h := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s", t.ID, t.PersonaName, branch, summary)))
+		hashHex := hex.EncodeToString(h[:])
+		if recErr := q.inft.RecordInvocation(ctx, coderTokenIDForRecord, hashHex); recErr != nil {
+			slog.Warn("inft recordInvocation failed (coder)",
+				"task_id", t.ID, "tokenID", coderTokenIDForRecord, "err", recErr)
+		}
 	}
 
 	var prURL string
@@ -510,6 +565,10 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 	}
 
 	if q.notifier != nil {
+		labels := []string{"planner", "coder", "reviewer"}
+		if t.PersonaName != "" {
+			labels = []string{"planner", t.PersonaName, "reviewer"}
+		}
 		clean := len(flaggedFindings) == 0 && reviewDecision == swarm.DecisionApprove
 		if clean {
 			q.notifier.NotifyCompleted(ctx, CompletedArgs{
@@ -524,6 +583,7 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 				PlannerPlan:      planText,
 				ReviewerCritique: reviewCritique,
 				ReviewerDecision: string(reviewDecision),
+				PersonaLabels:    labels,
 			})
 		} else {
 			q.notifier.NotifyNeedsReview(ctx, NeedsReviewArgs{
@@ -539,6 +599,7 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 				ReviewerCritique: reviewCritique,
 				ReviewerDecision: string(reviewDecision),
 				Receipts:         []brain.Receipt{plannerReceipt, synthCoderReceipt(), reviewerReceipt},
+				PersonaLabels:    labels,
 			})
 		}
 	}
@@ -787,7 +848,7 @@ func (q *Queue) RetryTask(ctx context.Context, id int64) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("get original task: %w", err)
 	}
-	newTask, err := q.repo.CreateTask(ctx, orig.Description, orig.TargetRepo, orig.BudgetProfile)
+	newTask, err := q.repo.CreateTask(ctx, orig.Description, orig.TargetRepo, orig.BudgetProfile, orig.PersonaName)
 	if err != nil {
 		return 0, fmt.Errorf("create retry task: %w", err)
 	}

@@ -36,6 +36,9 @@ type stubOps struct {
 	lastRepo string
 	lastDesc string
 
+	// M7-F.4: persona flag plumbing
+	lastPersonaName string
+
 	// AK-3: ask routing
 	lastAskRepo string
 	lastAskDesc string
@@ -53,12 +56,13 @@ type stubOps struct {
 	listErr    error
 }
 
-func (s *stubOps) CreateTask(ctx context.Context, desc, targetRepo, profile string) (int64, error) {
+func (s *stubOps) CreateTask(ctx context.Context, desc, targetRepo, profile, personaName string) (int64, error) {
 	s.Created = append(s.Created, desc)
 	s.LastCreatedRepo = targetRepo
 	s.LastProfile = profile
 	s.lastRepo = targetRepo
 	s.lastDesc = desc
+	s.lastPersonaName = personaName
 	if s.nextID != 0 {
 		return s.nextID, nil
 	}
@@ -318,7 +322,7 @@ func TestHandler_ReplyToUnknownMessage_DMsNotFound(t *testing.T) {
 func TestHandler_ReplyToKnownMessage_QueuesThreadedTask(t *testing.T) {
 	ctx := context.Background()
 	repo := newInMemRepo(t)
-	task, err := repo.CreateTask(ctx, "build a thing", "vaibhav0806/foo", "default")
+	task, err := repo.CreateTask(ctx, "build a thing", "vaibhav0806/foo", "default", "")
 	require.NoError(t, err)
 	require.NoError(t, repo.SetCompletionMessageID(ctx, task.ID, 12345))
 
@@ -462,6 +466,46 @@ func TestHandle_PersonaMint_DuplicateName(t *testing.T) {
 	require.NotEmpty(t, fc.Sent)
 	last := fc.Sent[len(fc.Sent)-1].Text
 	require.Contains(t, last, "already taken")
+}
+
+func TestHandle_Task_WithPersonaFlag(t *testing.T) {
+	ops := &stubOps{}
+	fc := NewFakeClient()
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
+
+	require.NoError(t, h.Handle(context.Background(), Update{
+		ChatID: 1,
+		Text:   "/task --persona=rustacean fix the auth bug",
+	}))
+	require.Equal(t, "rustacean", ops.lastPersonaName)
+	require.Equal(t, "fix the auth bug", ops.lastDesc)
+}
+
+func TestHandle_Task_NoPersonaFlag_DefaultsToEmpty(t *testing.T) {
+	ops := &stubOps{}
+	fc := NewFakeClient()
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
+
+	require.NoError(t, h.Handle(context.Background(), Update{
+		ChatID: 1,
+		Text:   "/task fix the auth bug",
+	}))
+	require.Equal(t, "", ops.lastPersonaName)
+	require.Equal(t, "fix the auth bug", ops.lastDesc)
+}
+
+func TestHandle_Task_PersonaFlagBeforeRepo(t *testing.T) {
+	ops := &stubOps{}
+	fc := NewFakeClient()
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
+
+	require.NoError(t, h.Handle(context.Background(), Update{
+		ChatID: 1,
+		Text:   "/task --persona=rustacean foo/bar fix the auth bug",
+	}))
+	require.Equal(t, "rustacean", ops.lastPersonaName)
+	require.Equal(t, "foo/bar", ops.lastRepo)
+	require.Equal(t, "fix the auth bug", ops.lastDesc)
 }
 
 func TestHandle_Personas_Lists(t *testing.T) {

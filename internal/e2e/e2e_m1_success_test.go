@@ -50,7 +50,7 @@ func TestE2E_M1_TinyCodingTask(t *testing.T) {
 	tokens := githubAppTokenSource(t)
 	q := queue.New(r, runner.QueueAdapter{D: d}, tokens, nil, "")
 
-	id, err := q.CreateTask(ctx, "add a file HELLO_ERA.md with the single line 'hello from era M1'", "", "default")
+	id, err := q.CreateTask(ctx, "add a file HELLO_ERA.md with the single line 'hello from era M1'", "", "default", "")
 	require.NoError(t, err)
 
 	ran, err := q.RunNext(ctx)

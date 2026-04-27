@@ -23,7 +23,7 @@ func TestRepo_CreateAndGet(t *testing.T) {
 	ctx := context.Background()
 	r := openTest(t)
 
-	created, err := r.CreateTask(ctx, "do the thing", "", "default")
+	created, err := r.CreateTask(ctx, "do the thing", "", "default", "")
 	require.NoError(t, err)
 	require.Equal(t, "queued", created.Status)
 
@@ -37,8 +37,8 @@ func TestRepo_ClaimNextQueued(t *testing.T) {
 	ctx := context.Background()
 	r := openTest(t)
 
-	_, _ = r.CreateTask(ctx, "first", "", "default")
-	_, _ = r.CreateTask(ctx, "second", "", "default")
+	_, _ = r.CreateTask(ctx, "first", "", "default", "")
+	_, _ = r.CreateTask(ctx, "second", "", "default", "")
 
 	claimed, err := r.ClaimNext(ctx)
 	require.NoError(t, err)
@@ -59,13 +59,13 @@ func TestRepo_CompleteAndFail(t *testing.T) {
 	ctx := context.Background()
 	r := openTest(t)
 
-	t1, _ := r.CreateTask(ctx, "a", "", "default")
+	t1, _ := r.CreateTask(ctx, "a", "", "default", "")
 	require.NoError(t, r.CompleteTask(ctx, t1.ID, "agent/1/slug", "did stuff", 0, 0))
 	got, _ := r.GetTask(ctx, t1.ID)
 	require.Equal(t, "completed", got.Status)
 	require.Equal(t, "agent/1/slug", got.BranchName.String)
 
-	t2, _ := r.CreateTask(ctx, "b", "", "default")
+	t2, _ := r.CreateTask(ctx, "b", "", "default", "")
 	require.NoError(t, r.FailTask(ctx, t2.ID, "boom"))
 	got2, _ := r.GetTask(ctx, t2.ID)
 	require.Equal(t, "failed", got2.Status)
@@ -76,7 +76,7 @@ func TestRepo_Events(t *testing.T) {
 	ctx := context.Background()
 	r := openTest(t)
 
-	task, _ := r.CreateTask(ctx, "x", "", "default")
+	task, _ := r.CreateTask(ctx, "x", "", "default", "")
 	require.NoError(t, r.AppendEvent(ctx, task.ID, "started", `{"pid":42}`))
 	require.NoError(t, r.AppendEvent(ctx, task.ID, "progress", `{"pct":50}`))
 
@@ -91,7 +91,7 @@ func TestRepo_CompleteTask_RecordsTokensAndCost(t *testing.T) {
 	ctx := context.Background()
 	r := openTest(t)
 
-	task, err := r.CreateTask(ctx, "x", "", "default")
+	task, err := r.CreateTask(ctx, "x", "", "default", "")
 	require.NoError(t, err)
 	require.NoError(t, r.CompleteTask(ctx, task.ID, "agent/1/b", "done", 12345, 17))
 
@@ -107,7 +107,7 @@ func TestRepo_ListRecent(t *testing.T) {
 	r := openTest(t)
 
 	for i := 0; i < 5; i++ {
-		_, _ = r.CreateTask(ctx, "t", "", "default")
+		_, _ = r.CreateTask(ctx, "t", "", "default", "")
 	}
 	list, err := r.ListRecent(ctx, 3)
 	require.NoError(t, err)
@@ -118,7 +118,7 @@ func TestRepo_SetStatus(t *testing.T) {
 	ctx := context.Background()
 	r := openTest(t)
 
-	task, err := r.CreateTask(ctx, "x", "", "default")
+	task, err := r.CreateTask(ctx, "x", "", "default", "")
 	require.NoError(t, err)
 	require.Equal(t, "queued", task.Status)
 
@@ -130,7 +130,7 @@ func TestRepo_SetStatus(t *testing.T) {
 func TestRepo_SetStatus_RejectsInvalid(t *testing.T) {
 	ctx := context.Background()
 	r := openTest(t)
-	task, _ := r.CreateTask(ctx, "x", "", "default")
+	task, _ := r.CreateTask(ctx, "x", "", "default", "")
 	// The tasks.status CHECK constraint rejects arbitrary strings.
 	err := r.SetStatus(ctx, task.ID, "nonsense")
 	require.Error(t, err)
@@ -140,11 +140,11 @@ func TestRepo_CreateTask_StoresTargetRepo(t *testing.T) {
 	ctx := context.Background()
 	r := openTest(t)
 
-	t1, err := r.CreateTask(ctx, "default-repo task", "", "default")
+	t1, err := r.CreateTask(ctx, "default-repo task", "", "default", "")
 	require.NoError(t, err)
 	require.Equal(t, "", t1.TargetRepo)
 
-	t2, err := r.CreateTask(ctx, "explicit-repo task", "alice/bob", "default")
+	t2, err := r.CreateTask(ctx, "explicit-repo task", "alice/bob", "default", "")
 	require.NoError(t, err)
 	require.Equal(t, "alice/bob", t2.TargetRepo)
 
@@ -159,9 +159,9 @@ func TestRepo_ListBetween(t *testing.T) {
 	r := openTest(t)
 
 	// Seed three tasks
-	_, _ = r.CreateTask(ctx, "a", "", "default")
-	_, _ = r.CreateTask(ctx, "b", "", "default")
-	_, _ = r.CreateTask(ctx, "c", "", "default")
+	_, _ = r.CreateTask(ctx, "a", "", "default", "")
+	_, _ = r.CreateTask(ctx, "b", "", "default", "")
+	_, _ = r.CreateTask(ctx, "c", "", "default", "")
 
 	now := time.Now().UTC()
 
@@ -178,7 +178,7 @@ func TestRepo_ListBetween(t *testing.T) {
 
 func TestRepo_SetPRNumber_UpdatesColumn(t *testing.T) {
 	repo := openTest(t)
-	task, err := repo.CreateTask(context.Background(), "test task", "", "default")
+	task, err := repo.CreateTask(context.Background(), "test task", "", "default", "")
 	require.NoError(t, err)
 	require.NoError(t, repo.SetPRNumber(context.Background(), task.ID, 42))
 	got, err := repo.GetTask(context.Background(), task.ID)
@@ -189,7 +189,7 @@ func TestRepo_SetPRNumber_UpdatesColumn(t *testing.T) {
 
 func TestRepo_CompletionMessageID_RoundTrip(t *testing.T) {
 	repo := openTest(t)
-	task, err := repo.CreateTask(context.Background(), "test", "", "default")
+	task, err := repo.CreateTask(context.Background(), "test", "", "default", "")
 	require.NoError(t, err)
 	require.NoError(t, repo.SetCompletionMessageID(context.Background(), task.ID, 12345))
 	got, err := repo.GetTaskByCompletionMessageID(context.Background(), 12345)

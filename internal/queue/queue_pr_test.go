@@ -95,7 +95,7 @@ func TestQueue_RunNext_OpensPROnSuccess(t *testing.T) {
 	n := &fakeNotifier{}
 	q.SetNotifier(n)
 
-	_, err := repo.CreateTask(ctx, "do thing", "owner/repo", "default")
+	_, err := repo.CreateTask(ctx, "do thing", "owner/repo", "default", "")
 	require.NoError(t, err)
 	_, err = q.RunNext(ctx)
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestQueue_RunNext_PRCreateFails_FallsBackToBranchURL(t *testing.T) {
 	n := &fakeNotifier{}
 	q.SetNotifier(n)
 
-	task, err := repo.CreateTask(ctx, "failing pr task", "owner/repo", "default")
+	task, err := repo.CreateTask(ctx, "failing pr task", "owner/repo", "default", "")
 	require.NoError(t, err)
 	_, err = q.RunNext(ctx)
 	require.NoError(t, err)
@@ -150,7 +150,7 @@ func TestQueue_RunNext_DefaultBranchFails_FallsBackToMain(t *testing.T) {
 	n := &fakeNotifier{}
 	q.SetNotifier(n)
 
-	_, err := repo.CreateTask(ctx, "x", "owner/repo", "default")
+	_, err := repo.CreateTask(ctx, "x", "owner/repo", "default", "")
 	require.NoError(t, err)
 	_, err = q.RunNext(ctx)
 	require.NoError(t, err)

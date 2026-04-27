@@ -13,6 +13,7 @@ import (
 	"github.com/vaibhav0806/era/internal/audit"
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
+	"github.com/vaibhav0806/era/internal/persona"
 	"github.com/vaibhav0806/era/internal/progress"
 	"github.com/vaibhav0806/era/internal/queue"
 	"github.com/vaibhav0806/era/internal/swarm"
@@ -100,7 +101,7 @@ func TestQueue_RunNext_Success(t *testing.T) {
 	fr := &fakeRunner{branch: "agent/1/x", summary: "ok"}
 	q, repo := newRunQueue(t, fr)
 
-	id, err := q.CreateTask(ctx, "do x", "", "default")
+	id, err := q.CreateTask(ctx, "do x", "", "default", "")
 	require.NoError(t, err)
 
 	ran, err := q.RunNext(ctx)
@@ -127,7 +128,7 @@ func TestQueue_RunNext_Failure(t *testing.T) {
 	fr := &fakeRunner{err: errors.New("container exploded")}
 	q, repo := newRunQueue(t, fr)
 
-	id, err := q.CreateTask(ctx, "boom", "", "default")
+	id, err := q.CreateTask(ctx, "boom", "", "default", "")
 	require.NoError(t, err)
 
 	ran, err := q.RunNext(ctx)
@@ -146,7 +147,7 @@ func TestQueue_RunNext_EmitsEvents(t *testing.T) {
 	fr := &fakeRunner{branch: "agent/1/y", summary: "ok"}
 	q, repo := newRunQueue(t, fr)
 
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
 
@@ -162,7 +163,7 @@ func TestQueue_RunNext_FailureEmitsEvent(t *testing.T) {
 	fr := &fakeRunner{err: errors.New("nope")}
 	q, repo := newRunQueue(t, fr)
 
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	_, _ = q.RunNext(ctx)
 
 	events, err := repo.ListEvents(ctx, id)
@@ -263,7 +264,7 @@ func TestQueue_Notifier_OnSuccess(t *testing.T) {
 	n := &fakeNotifier{}
 	q.SetNotifier(n)
 
-	id, _ := q.CreateTask(ctx, "work", "", "default")
+	id, _ := q.CreateTask(ctx, "work", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
 
@@ -281,7 +282,7 @@ func TestQueue_Notifier_OnFailure(t *testing.T) {
 	n := &fakeNotifier{}
 	q.SetNotifier(n)
 
-	id, _ := q.CreateTask(ctx, "work", "", "default")
+	id, _ := q.CreateTask(ctx, "work", "", "default", "")
 	_, _ = q.RunNext(ctx)
 
 	require.Len(t, n.failed, 1)
@@ -297,7 +298,7 @@ func TestQueue_Notifier_NilSafe(t *testing.T) {
 	q, _ := newRunQueue(t, fr)
 	// intentionally no SetNotifier
 
-	_, _ = q.CreateTask(ctx, "x", "", "default")
+	_, _ = q.CreateTask(ctx, "x", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
 }
@@ -306,7 +307,7 @@ func TestQueue_RunNext_RecordsTokensAndCost(t *testing.T) {
 	ctx := context.Background()
 	fr := &fakeRunner{branch: "b", summary: "s", tokens: 4321, costCents: 9}
 	q, repo := newRunQueue(t, fr)
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
 	got, err := repo.GetTask(ctx, id)
@@ -325,7 +326,7 @@ func TestQueue_RunNext_PersistsAuditEntries(t *testing.T) {
 		},
 	}
 	q, repo := newRunQueue(t, fr)
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
 
@@ -346,7 +347,7 @@ func TestQueue_RunNext_PassesGhTokenFromSource(t *testing.T) {
 	fr := &fakeRunner{branch: "b", summary: "s"}
 	tokens := &fakeTokens{token: "ghs_test_token_123"}
 	q, _ := newRunQueueWithTokens(t, fr, tokens)
-	_, _ = q.CreateTask(ctx, "x", "", "default")
+	_, _ = q.CreateTask(ctx, "x", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "ghs_test_token_123", fr.lastToken, "runner should receive the minted token")
@@ -357,7 +358,7 @@ func TestQueue_RunNext_TokenMintFailure(t *testing.T) {
 	fr := &fakeRunner{}
 	tokens := &fakeTokens{err: errors.New("github down")}
 	q, repo := newRunQueueWithTokens(t, fr, tokens)
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.Error(t, err)
 	task, _ := repo.GetTask(ctx, id)
@@ -372,7 +373,7 @@ func TestQueue_RunNext_CleanDiff_StaysCompleted(t *testing.T) {
 		{Path: "foo.go", Added: []string{"foo"}},
 	}}
 	q, repo := newRunQueueWithDeps(t, fr, nil, fc, "a/b")
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
 	task, _ := repo.GetTask(ctx, id)
@@ -387,7 +388,7 @@ func TestQueue_RunNext_FlaggedDiff_SetsNeedsReview(t *testing.T) {
 		{Path: "foo_test.go", Removed: []string{"func TestBar(t *testing.T) {}"}},
 	}}
 	q, repo := newRunQueueWithDeps(t, fr, nil, fc, "a/b")
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
 	task, _ := repo.GetTask(ctx, id)
@@ -409,7 +410,7 @@ func TestQueue_RunNext_CompareError_LogsEventButDoesntBlock(t *testing.T) {
 	fr := &fakeRunner{branch: "agent/1/x", summary: "s"}
 	fc := &fakeCompare{err: errors.New("github 404")}
 	q, repo := newRunQueueWithDeps(t, fr, nil, fc, "a/b")
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
 	task, _ := repo.GetTask(ctx, id)
@@ -429,7 +430,7 @@ func TestQueue_RunNext_NoCompareClient_NoDiffscan(t *testing.T) {
 	ctx := context.Background()
 	fr := &fakeRunner{branch: "agent/1/x", summary: "s"}
 	q, repo := newRunQueueWithDeps(t, fr, nil, nil, "") // compare == nil
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
 	task, _ := repo.GetTask(ctx, id)
@@ -446,7 +447,7 @@ func TestQueue_RunNext_FlaggedDiff_CallsNotifyNeedsReview(t *testing.T) {
 	n := &fakeNotifier{}
 	q.SetNotifier(n)
 
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
 
@@ -475,7 +476,7 @@ func TestQueue_ApproveTask_NeedsReviewToApproved(t *testing.T) {
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
 	bd := &fakeBranchDeleter{}
 	q.SetBranchDeleter(bd)
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	require.NoError(t, repo.SetStatus(ctx, id, "needs_review"))
 
 	require.NoError(t, q.ApproveTask(ctx, id))
@@ -494,7 +495,7 @@ func TestQueue_RejectTask_NeedsReviewToRejected_DeletesBranch(t *testing.T) {
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
 	bd := &fakeBranchDeleter{}
 	q.SetBranchDeleter(bd)
-	task, _ := repo.CreateTask(ctx, "x", "", "default")
+	task, _ := repo.CreateTask(ctx, "x", "", "default", "")
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")
 	require.NoError(t, repo.CompleteTask(ctx, task.ID, "agent/1/foo", "s", 0, 0))
 	_ = repo.SetStatus(ctx, task.ID, "needs_review") // re-set since CompleteTask sets completed
@@ -513,7 +514,7 @@ func TestQueue_ApproveTask_AlreadyRejected_Errors(t *testing.T) {
 	ctx := context.Background()
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
 	q.SetBranchDeleter(&fakeBranchDeleter{})
-	task, _ := repo.CreateTask(ctx, "x", "", "default")
+	task, _ := repo.CreateTask(ctx, "x", "", "default", "")
 	_ = repo.SetStatus(ctx, task.ID, "rejected")
 
 	err := q.ApproveTask(ctx, task.ID)
@@ -525,7 +526,7 @@ func TestQueue_RejectTask_AlreadyApproved_Errors(t *testing.T) {
 	ctx := context.Background()
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
 	q.SetBranchDeleter(&fakeBranchDeleter{})
-	task, _ := repo.CreateTask(ctx, "x", "", "default")
+	task, _ := repo.CreateTask(ctx, "x", "", "default", "")
 	_ = repo.SetStatus(ctx, task.ID, "approved")
 
 	err := q.RejectTask(ctx, task.ID)
@@ -538,7 +539,7 @@ func TestQueue_RejectTask_BranchDeleterError_LoggedNotPropagated(t *testing.T) {
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
 	bd := &fakeBranchDeleter{err: errors.New("github 422")}
 	q.SetBranchDeleter(bd)
-	task, _ := repo.CreateTask(ctx, "x", "", "default")
+	task, _ := repo.CreateTask(ctx, "x", "", "default", "")
 	_ = repo.CompleteTask(ctx, task.ID, "agent/1/bar", "s", 0, 0)
 	_ = repo.SetStatus(ctx, task.ID, "needs_review")
 
@@ -563,7 +564,7 @@ func TestQueue_ApproveTask_WrongStatus_Errors(t *testing.T) {
 	q, _ := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
 	q.SetBranchDeleter(&fakeBranchDeleter{})
 	// queued status — can't approve
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	err := q.ApproveTask(ctx, id)
 	require.Error(t, err)
 }
@@ -571,7 +572,7 @@ func TestQueue_ApproveTask_WrongStatus_Errors(t *testing.T) {
 func TestQueue_CancelTask_QueuedToCancelled(t *testing.T) {
 	ctx := context.Background()
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 
 	require.NoError(t, q.CancelTask(ctx, id))
 	task, _ := repo.GetTask(ctx, id)
@@ -586,7 +587,7 @@ func TestQueue_CancelTask_QueuedToCancelled(t *testing.T) {
 func TestQueue_CancelTask_RunningErrors(t *testing.T) {
 	ctx := context.Background()
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	require.NoError(t, repo.SetStatus(ctx, id, "running"))
 
 	err := q.CancelTask(ctx, id)
@@ -600,7 +601,7 @@ func TestQueue_CancelTask_RunningErrors(t *testing.T) {
 func TestQueue_CancelTask_CompletedErrors(t *testing.T) {
 	ctx := context.Background()
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
-	id, _ := q.CreateTask(ctx, "x", "", "default")
+	id, _ := q.CreateTask(ctx, "x", "", "default", "")
 	require.NoError(t, repo.CompleteTask(ctx, id, "agent/1/x", "s", 0, 0))
 
 	err := q.CancelTask(ctx, id)
@@ -611,7 +612,7 @@ func TestQueue_CancelTask_CompletedErrors(t *testing.T) {
 func TestQueue_RetryTask_ClonesDescription(t *testing.T) {
 	ctx := context.Background()
 	q, repo := newRunQueueWithDeps(t, &fakeRunner{}, nil, nil, "a/b")
-	oldID, _ := q.CreateTask(ctx, "refactor the auth middleware", "", "default")
+	oldID, _ := q.CreateTask(ctx, "refactor the auth middleware", "", "default", "")
 	require.NoError(t, repo.SetStatus(ctx, oldID, "failed"))
 
 	newID, err := q.RetryTask(ctx, oldID)
@@ -640,7 +641,7 @@ func TestQueue_RetryTask_WorksForAnyStatus(t *testing.T) {
 	// Even approved/rejected/completed tasks can be retried — it just clones
 	// the description. This is the "/retry ran a task that succeeded already
 	// because I want the same thing done again" case.
-	id, _ := q.CreateTask(ctx, "same thing twice", "", "default")
+	id, _ := q.CreateTask(ctx, "same thing twice", "", "default", "")
 	require.NoError(t, repo.SetStatus(ctx, id, "approved"))
 	newID, err := q.RetryTask(ctx, id)
 	require.NoError(t, err)
@@ -653,7 +654,7 @@ func TestQueue_RunNext_PassesEffectiveRepo_FromTask(t *testing.T) {
 	ctx := context.Background()
 	fr := &fakeRunner{branch: "agent/1/x", summary: "s"}
 	q, repo := newRunQueueWithDeps(t, fr, nil, nil, "default/repo")
-	task, err := repo.CreateTask(ctx, "x", "alice/bob", "default")
+	task, err := repo.CreateTask(ctx, "x", "alice/bob", "default", "")
 	require.NoError(t, err)
 	require.Equal(t, "alice/bob", task.TargetRepo)
 	_, err = q.RunNext(ctx)
@@ -668,7 +669,7 @@ func TestQueue_RunNext_KilledTask_WritesCancelled(t *testing.T) {
 	n := &fakeNotifier{}
 	q.SetNotifier(n)
 
-	task, _ := repo.CreateTask(ctx, "x", "", "default")
+	task, _ := repo.CreateTask(ctx, "x", "", "default", "")
 	q.Running().MarkKilled(task.ID) // simulate /cancel already fired
 
 	_, err := q.RunNext(ctx)
@@ -684,7 +685,7 @@ func TestQueue_RunNext_FallsBackToDefaultRepo(t *testing.T) {
 	ctx := context.Background()
 	fr := &fakeRunner{branch: "agent/1/x", summary: "s"}
 	q, _ := newRunQueueWithDeps(t, fr, nil, nil, "default/repo")
-	_, _ = q.CreateTask(ctx, "no-repo task", "", "default")
+	_, _ = q.CreateTask(ctx, "no-repo task", "", "default", "")
 	_, err := q.RunNext(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "default/repo", fr.lastRepo, "empty TargetRepo falls back to default")
@@ -694,7 +695,7 @@ func TestQueue_RunNext_DeepProfilePassesThroughCaps(t *testing.T) {
 	ctx := context.Background()
 	fr := &fakeRunner{branch: "agent/1/x", summary: "s"}
 	q, repo := newRunQueue(t, fr)
-	_, err := repo.CreateTask(ctx, "x", "", "deep")
+	_, err := repo.CreateTask(ctx, "x", "", "deep", "")
 	require.NoError(t, err)
 	_, err = q.RunNext(ctx)
 	require.NoError(t, err)
@@ -733,7 +734,7 @@ func TestQueue_RunNext_FiresProgress(t *testing.T) {
 	q, repo := newRunQueue(t, fr)
 	pn := &fakeProgressNotifier{}
 	q.SetProgressNotifier(pn)
-	_, err := repo.CreateTask(ctx, "x", "", "default")
+	_, err := repo.CreateTask(ctx, "x", "", "default", "")
 	require.NoError(t, err)
 	_, err = q.RunNext(ctx)
 	require.NoError(t, err)
@@ -786,7 +787,7 @@ func TestRunNext_PlannerInjectedIntoRunnerDescription(t *testing.T) {
 	n := &fakeNotifier{}
 	q.SetNotifier(n)
 
-	id, err := q.CreateTask(ctx, "implement login", "", "default")
+	id, err := q.CreateTask(ctx, "implement login", "", "default", "")
 	require.NoError(t, err)
 
 	_, err = q.RunNext(ctx)
@@ -824,7 +825,7 @@ func TestRunNext_ThreadsUserIDIntoSwarm(t *testing.T) {
 	n := &fakeNotifier{}
 	q.SetNotifier(n)
 
-	_, err := q.CreateTask(ctx, "implement login", "", "default")
+	_, err := q.CreateTask(ctx, "implement login", "", "default", "")
 	require.NoError(t, err)
 
 	_, err = q.RunNext(ctx)
@@ -850,7 +851,7 @@ func TestRunNext_PassesPlannerSealedToReviewer(t *testing.T) {
 	n := &fakeNotifier{}
 	q.SetNotifier(n)
 
-	_, err := repo.CreateTask(ctx, "do thing", "owner/repo", "default")
+	_, err := repo.CreateTask(ctx, "do thing", "owner/repo", "default", "")
 	require.NoError(t, err)
 
 	processed, err := q.RunNext(ctx)
@@ -877,7 +878,7 @@ func TestRunNext_PassesUnsealedPlannerToReviewer(t *testing.T) {
 	q.SetSwarm(stub)
 	q.SetUserID("u")
 
-	_, err := repo.CreateTask(ctx, "do thing", "owner/repo", "default")
+	_, err := repo.CreateTask(ctx, "do thing", "owner/repo", "default", "")
 	require.NoError(t, err)
 
 	_, err = q.RunNext(ctx)
@@ -929,7 +930,7 @@ func TestRunNext_RecordsInvocationForPlannerAndReviewer(t *testing.T) {
 	inftStub := &stubINFT{}
 	q.SetINFT(inftStub)
 
-	_, err := repo.CreateTask(context.Background(), "do thing", "owner/repo", "default")
+	_, err := repo.CreateTask(context.Background(), "do thing", "owner/repo", "default", "")
 	require.NoError(t, err)
 	processed, err := q.RunNext(context.Background())
 	require.NoError(t, err)
@@ -937,11 +938,13 @@ func TestRunNext_RecordsInvocationForPlannerAndReviewer(t *testing.T) {
 
 	inftStub.mu.Lock()
 	defer inftStub.mu.Unlock()
-	require.Len(t, inftStub.calls, 2, "expected planner + reviewer invocations recorded")
+	require.Len(t, inftStub.calls, 3, "expected planner + coder + reviewer invocations recorded")
 	require.Equal(t, "0", inftStub.calls[0].tokenID, "planner tokenID = 0")
-	require.Equal(t, "2", inftStub.calls[1].tokenID, "reviewer tokenID = 2")
+	require.Equal(t, "1", inftStub.calls[1].tokenID, "coder tokenID = 1 (default, no custom persona)")
+	require.Equal(t, "2", inftStub.calls[2].tokenID, "reviewer tokenID = 2")
 	require.Len(t, inftStub.calls[0].receiptHashHex, 64, "receipt hash should be 64-char hex")
 	require.Len(t, inftStub.calls[1].receiptHashHex, 64)
+	require.Len(t, inftStub.calls[2].receiptHashHex, 64)
 }
 
 func TestRunNext_INFTFailureDoesNotBlockTask(t *testing.T) {
@@ -959,7 +962,7 @@ func TestRunNext_INFTFailureDoesNotBlockTask(t *testing.T) {
 	inftStub := &stubINFT{failOnFirst: true}
 	q.SetINFT(inftStub)
 
-	_, err := repo.CreateTask(context.Background(), "do thing", "owner/repo", "default")
+	_, err := repo.CreateTask(context.Background(), "do thing", "owner/repo", "default", "")
 	require.NoError(t, err)
 	processed, err := q.RunNext(context.Background())
 	require.NoError(t, err, "INFT failure must not block task completion")
@@ -967,7 +970,7 @@ func TestRunNext_INFTFailureDoesNotBlockTask(t *testing.T) {
 
 	inftStub.mu.Lock()
 	defer inftStub.mu.Unlock()
-	require.Len(t, inftStub.calls, 2, "second call should attempt despite first failure")
+	require.Len(t, inftStub.calls, 3, "subsequent calls (coder + reviewer) should attempt despite first failure")
 }
 
 func TestRunNext_NoINFTProviderSkipsRecording(t *testing.T) {
@@ -984,9 +987,151 @@ func TestRunNext_NoINFTProviderSkipsRecording(t *testing.T) {
 
 	// q.SetINFT(...) NOT called — provider stays nil.
 
-	_, err := repo.CreateTask(context.Background(), "do thing", "owner/repo", "default")
+	_, err := repo.CreateTask(context.Background(), "do thing", "owner/repo", "default", "")
 	require.NoError(t, err)
 	processed, err := q.RunNext(context.Background())
 	require.NoError(t, err)
 	require.True(t, processed, "task should complete with no INFTProvider")
+}
+
+// stubPersonas implements queue.PersonaRegistry for the M7-F.4 persona
+// resolution tests. Lookup returns ErrPersonaNotFound for any name not in
+// the rows map, mirroring the prod sqlite registry.
+type stubPersonas struct {
+	rows map[string]persona.Persona
+}
+
+func (s *stubPersonas) Lookup(_ context.Context, name string) (persona.Persona, error) {
+	if p, ok := s.rows[name]; ok {
+		return p, nil
+	}
+	return persona.Persona{}, queue.ErrPersonaNotFound
+}
+func (s *stubPersonas) List(_ context.Context) ([]persona.Persona, error) { return nil, nil }
+func (s *stubPersonas) Insert(_ context.Context, _ persona.Persona) error { return nil }
+func (s *stubPersonas) UpdateENSSubname(_ context.Context, _, _ string) error {
+	return nil
+}
+
+// stubPromptStorage implements queue.PromptStorage. FetchPrompt returns the
+// content stored under the given URI in `prompts`. UploadPrompt is unused
+// in RunNext tests.
+type stubPromptStorage struct {
+	prompts map[string]string
+	fetchErr error
+}
+
+func (s *stubPromptStorage) UploadPrompt(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+func (s *stubPromptStorage) FetchPrompt(_ context.Context, uri string) (string, error) {
+	if s.fetchErr != nil {
+		return "", s.fetchErr
+	}
+	return s.prompts[uri], nil
+}
+
+func TestRunNext_PersonaTask_PrependsPromptAndUsesCustomTokenID(t *testing.T) {
+	ctx := context.Background()
+	fr := &fakeRunner{branch: "agent/1/ok", summary: "done", tokens: 10, costCents: 1}
+	q, repo := newRunQueue(t, fr)
+
+	swarmStub := &stubSwarm{planText: "P1", reviewDecision: swarm.DecisionApprove}
+	q.SetSwarm(swarmStub)
+
+	personas := &stubPersonas{
+		rows: map[string]persona.Persona{
+			"rustacean": {
+				TokenID:         "3",
+				Name:            "rustacean",
+				SystemPromptURI: "zg://rust-prompt",
+			},
+		},
+	}
+	q.SetPersonas(personas)
+
+	storage := &stubPromptStorage{
+		prompts: map[string]string{"zg://rust-prompt": "You only write idiomatic Rust."},
+	}
+	q.SetPromptStorage(storage)
+
+	inftStub := &stubINFT{}
+	q.SetINFT(inftStub)
+
+	_, err := repo.CreateTask(ctx, "build a thing", "owner/repo", "default", "rustacean")
+	require.NoError(t, err)
+	processed, err := q.RunNext(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+
+	require.Contains(t, fr.lastDes, "PERSONA SYSTEM PROMPT:")
+	require.Contains(t, fr.lastDes, "You only write idiomatic Rust.")
+	require.Contains(t, fr.lastDes, "build a thing")
+
+	inftStub.mu.Lock()
+	defer inftStub.mu.Unlock()
+	// Expect 3 calls: planner(0), coder(3), reviewer(2).
+	require.Len(t, inftStub.calls, 3)
+	require.Equal(t, "0", inftStub.calls[0].tokenID)
+	require.Equal(t, "3", inftStub.calls[1].tokenID, "coder slot uses persona tokenID, not default '1'")
+	require.Equal(t, "2", inftStub.calls[2].tokenID)
+}
+
+func TestRunNext_PersonaTask_UnknownPersona_FailsTask(t *testing.T) {
+	ctx := context.Background()
+	fr := &fakeRunner{branch: "agent/1/ok", summary: "done"}
+	q, repo := newRunQueue(t, fr)
+
+	personas := &stubPersonas{rows: map[string]persona.Persona{}}
+	q.SetPersonas(personas)
+	q.SetPromptStorage(&stubPromptStorage{prompts: map[string]string{}})
+
+	n := &fakeNotifier{}
+	q.SetNotifier(n)
+
+	task, err := repo.CreateTask(ctx, "do thing", "owner/repo", "default", "ghost-persona")
+	require.NoError(t, err)
+	_, err = q.RunNext(ctx)
+	require.NoError(t, err)
+
+	got, err := repo.GetTask(ctx, task.ID)
+	require.NoError(t, err)
+	require.Equal(t, "failed", got.Status)
+	require.Contains(t, got.Error.String, "ghost-persona")
+	require.Equal(t, 0, fr.calls, "runner should NOT be invoked when persona resolution fails")
+	require.Len(t, n.failed, 1)
+}
+
+func TestRunNext_CustomPersona_FreshNamespace_NoError(t *testing.T) {
+	ctx := context.Background()
+	fr := &fakeRunner{branch: "agent/1/ok", summary: "done", tokens: 5, costCents: 1}
+	q, repo := newRunQueue(t, fr)
+
+	swarmStub := &stubSwarm{planText: "P", reviewDecision: swarm.DecisionApprove}
+	q.SetSwarm(swarmStub)
+
+	personas := &stubPersonas{
+		rows: map[string]persona.Persona{
+			"fresh-persona": {
+				TokenID:         "7",
+				Name:            "fresh-persona",
+				SystemPromptURI: "zg://fresh",
+			},
+		},
+	}
+	q.SetPersonas(personas)
+	q.SetPromptStorage(&stubPromptStorage{
+		prompts: map[string]string{"zg://fresh": "be fresh"},
+	})
+
+	n := &fakeNotifier{}
+	q.SetNotifier(n)
+
+	_, err := repo.CreateTask(ctx, "fresh task", "owner/repo", "default", "fresh-persona")
+	require.NoError(t, err)
+	processed, err := q.RunNext(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.Len(t, n.completed, 1)
+	require.Empty(t, n.failed)
 }

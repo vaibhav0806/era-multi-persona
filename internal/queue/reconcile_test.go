@@ -10,9 +10,9 @@ import (
 func TestReconcile_RunningToFailed(t *testing.T) {
 	ctx := context.Background()
 	q, repo := newRunQueue(t, &fakeRunner{})
-	t1, _ := repo.CreateTask(ctx, "x", "", "default")
+	t1, _ := repo.CreateTask(ctx, "x", "", "default", "")
 	_ = repo.SetStatus(ctx, t1.ID, "running")
-	t2, _ := repo.CreateTask(ctx, "y", "", "default")
+	t2, _ := repo.CreateTask(ctx, "y", "", "default", "")
 	// t2 stays queued.
 
 	n, err := q.Reconcile(ctx)

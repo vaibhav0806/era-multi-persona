@@ -39,6 +39,23 @@ func parseTaskArgs(s string) (repo, desc string) {
 	return "", s
 }
 
+// personaFlagRE matches "--persona=<name>" at the start of the /task body.
+// Name shape mirrors personaNameRE (lowercase alphanumerics + dashes).
+var personaFlagRE = regexp.MustCompile(`^--persona=([a-z0-9-]+)\s*`)
+
+// extractAndStripPersonaFlag pulls the optional "--persona=<name>" flag off
+// the front of the /task body. Returns ("", body) when not present.
+func extractAndStripPersonaFlag(body string) (name, remaining string) {
+	body = strings.TrimSpace(body)
+	m := personaFlagRE.FindStringSubmatchIndex(body)
+	if m == nil {
+		return "", body
+	}
+	name = body[m[2]:m[3]]
+	remaining = strings.TrimSpace(body[m[1]:])
+	return name, remaining
+}
+
 var askRepoPattern = regexp.MustCompile(`^([\w.-]+/[\w.-]+)\s+(.+)$`)
 
 // parseAskArgs splits "/ask <owner>/<repo> <question>" args into (repo, desc).
@@ -82,7 +99,7 @@ type PersonaMintResult struct {
 // imported directly here to avoid a queue ↔ telegram import cycle (the
 // queue package re-exports it as queue.Persona for its own callers).
 type Ops interface {
-	CreateTask(ctx context.Context, desc, targetRepo, profile string) (int64, error)
+	CreateTask(ctx context.Context, desc, targetRepo, profile, personaName string) (int64, error)
 	CreateAskTask(ctx context.Context, desc, targetRepo string) (int64, error)
 	TaskStatus(ctx context.Context, id int64) (string, error)
 	ListRecent(ctx context.Context, limit int) ([]TaskSummary, error)
@@ -130,12 +147,13 @@ func (h *Handler) Handle(ctx context.Context, u Update) error {
 			return err
 		}
 		profile, body := budget.ParseBudgetFlag(body)
+		personaName, body := extractAndStripPersonaFlag(body)
 		repo, desc := parseTaskArgs(body)
 		if desc == "" {
-			_, err := h.client.SendMessage(ctx, u.ChatID, "usage: /task [--budget=quick|default|deep] [owner/repo] <description>")
+			_, err := h.client.SendMessage(ctx, u.ChatID, "usage: /task [--budget=quick|default|deep] [--persona=<name>] [owner/repo] <description>")
 			return err
 		}
-		id, err := h.ops.CreateTask(ctx, desc, repo, profile)
+		id, err := h.ops.CreateTask(ctx, desc, repo, profile, personaName)
 		if err != nil {
 			_, err := h.client.SendMessage(ctx, u.ChatID, fmt.Sprintf("error: %v", err))
 			return err
@@ -310,7 +328,7 @@ func (h *Handler) handleReply(ctx context.Context, u Update) error {
 	if targetRepo == "" {
 		targetRepo = h.sandboxRepo
 	}
-	id, err := h.ops.CreateTask(ctx, prompt, targetRepo, "default")
+	id, err := h.ops.CreateTask(ctx, prompt, targetRepo, "default", "")
 	if err != nil {
 		return fmt.Errorf("queue reply task: %w", err)
 	}
