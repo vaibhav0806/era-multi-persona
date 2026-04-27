@@ -27,6 +27,7 @@ import (
 	"github.com/vaibhav0806/era-multi-persona/era-brain/llm/zg_compute"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/identity/ens"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/inft/zg_7857"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/storage/zg_storage"
 	"github.com/vaibhav0806/era/internal/config"
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
@@ -139,6 +140,10 @@ func main() {
 	// If 0G testnet env vars are present, wrap sqlite with the dual provider so audit
 	// log writes land on BOTH 0G AND SQLite.
 	var memProv memory.Provider = brainMem
+	// storageClient is the persona-prompt blob client. Lifted to outer scope so
+	// personasReconcile (after the iNFT + ENS blocks) can fetch tokenURI content
+	// for newly-imported mints. nil when zg env vars aren't configured.
+	var storageClient *zg_storage.Client
 	if zgEnabled() {
 		live, err := zg_kv.NewLiveOps(zg_kv.LiveOpsConfig{
 			PrivateKey: os.Getenv("PI_ZG_PRIVATE_KEY"),
@@ -150,13 +155,16 @@ func main() {
 			fail(fmt.Errorf("0G live ops: %w", err))
 		}
 		defer live.Close()
+		kvProv := zg_kv.NewWithOps(live)
 		primary := &zgComposite{
-			kvP:  zg_kv.NewWithOps(live),
+			kvP:  kvProv,
 			logP: zg_log.NewWithOps(live),
 		}
 		memProv = dual.New(brainMem, primary, func(op string, err error) {
 			slog.Warn("0G primary write failed", "op", op, "err", err)
 		})
+		// Persona-prompt blob client reuses the same KV plumbing.
+		storageClient = zg_storage.NewWithKV(kvProv)
 		slog.Info("0G storage wired",
 			"indexer", os.Getenv("PI_ZG_INDEXER_RPC"),
 			"kv_node_set", os.Getenv("PI_ZG_KV_NODE") != "")
@@ -192,8 +200,12 @@ func main() {
 	q.SetSwarm(sw)
 	q.SetUserID(strconv.FormatInt(cfg.TelegramAllowedUserID, 10))
 
+	// inftProv lifted to outer scope so personasReconcile can scan Transfer
+	// events after the ENS block has run. nil when zg env vars aren't set.
+	var inftProv *zg_7857.Provider
 	if zgINFTEnabled() {
-		inftProv, err := zg_7857.New(zg_7857.Config{
+		var err error
+		inftProv, err = zg_7857.New(zg_7857.Config{
 			ContractAddress: os.Getenv("PI_ZG_INFT_CONTRACT_ADDRESS"),
 			EVMRPCURL:       os.Getenv("PI_ZG_EVM_RPC"),
 			PrivateKey:      os.Getenv("PI_ZG_PRIVATE_KEY"),
@@ -225,8 +237,13 @@ func main() {
 		repo:        repo,
 	}
 
+	// ensProv lifted to outer scope so personasReconcile's ENS-retry pass can
+	// reuse the same provider. nil when ENS env vars aren't set or construction
+	// failed (decorative; boot continues).
+	var ensProv *ens.Provider
 	if ensEnabled() {
-		ensProv, err := ens.New(ens.Config{
+		var err error
+		ensProv, err = ens.New(ens.Config{
 			ParentName: os.Getenv("PI_ENS_PARENT_NAME"),
 			RPCURL:     os.Getenv("PI_ENS_RPC"),
 			PrivateKey: os.Getenv("PI_ZG_PRIVATE_KEY"),
@@ -236,6 +253,7 @@ func main() {
 			// ENS is decorative; Sepolia public RPC flakes more than 0G's RPC.
 			// Log + continue without ENS instead of aborting boot.
 			slog.Error("ens disabled — boot continues without ENS", "err", err)
+			ensProv = nil
 		} else {
 			defer ensProv.Close()
 
@@ -252,6 +270,33 @@ func main() {
 			notifier.ens = ensProv
 			slog.Info("ENS resolver wired", "parent", os.Getenv("PI_ENS_PARENT_NAME"))
 		}
+	}
+
+	// M7-F.5: persona registry reconcile — defaults + on-chain Transfer scan
+	// + ENS retry. Runs after iNFT + ENS wiring so all three providers are
+	// available. Each pass is non-fatal — failures are logged + boot continues.
+	{
+		var scanner TransferScanner
+		if inftProv != nil {
+			scanner = inftProv
+		}
+		var ensWriter queue.ENSWriter
+		if ensProv != nil {
+			ensWriter = ensProv
+		}
+		var storage queue.PromptStorage
+		if storageClient != nil {
+			storage = storageClient
+		}
+		personasReconcile(ctx, repo, scanner, ensWriter, storage)
+		q.SetPersonas(repo)
+		if ensProv != nil {
+			q.SetENSWriter(ensProv)
+		}
+		if storageClient != nil {
+			q.SetPromptStorage(storageClient)
+		}
+		slog.Info("personas reconciled")
 	}
 
 	q.SetNotifier(notifier)

@@ -172,6 +172,55 @@ func (p *Provider) Lookup(_ context.Context, _, _ string) (inft.Persona, error) 
 	return inft.Persona{}, ErrNotImplemented
 }
 
+// TransferEvent is the orchestrator-facing projection of a Transfer log
+// emitted by the iNFT contract during mint. ScanNewMints returns these for
+// the boot reconcile pass in cmd/orchestrator.
+type TransferEvent struct {
+	TokenID string
+	Owner   string
+	URI     string
+}
+
+// ScanNewMints returns all Transfer events with from=0x0, to=signer where
+// the event's tokenID > sinceTokenID. Used by the orchestrator boot reconcile
+// to import personas minted by other clients (or via cast) without era's DM flow.
+//
+// tokenURI fetch failures for individual events are logged + skipped (the
+// event itself stays out of the returned slice). A nil error with an empty
+// slice means "scan succeeded, no new mints since sinceTokenID".
+func (p *Provider) ScanNewMints(ctx context.Context, sinceTokenID int64) ([]TransferEvent, error) {
+	zero := common.Address{}
+	iter, err := p.contract.FilterTransfer(
+		&bind.FilterOpts{Context: ctx},
+		[]common.Address{zero},
+		[]common.Address{p.auth.From},
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("zg_7857 filterTransfer: %w", err)
+	}
+	defer iter.Close()
+
+	var out []TransferEvent
+	for iter.Next() {
+		ev := iter.Event
+		if ev.TokenId.Int64() <= sinceTokenID {
+			continue
+		}
+		uri, urierr := p.contract.TokenURI(&bind.CallOpts{Context: ctx}, ev.TokenId)
+		if urierr != nil {
+			// Non-fatal — log + skip this event.
+			continue
+		}
+		out = append(out, TransferEvent{
+			TokenID: ev.TokenId.String(),
+			Owner:   ev.To.Hex(),
+			URI:     uri,
+		})
+	}
+	return out, iter.Error()
+}
+
 func DecodeReceiptHash(hexStr string) ([32]byte, error) {
 	var hash [32]byte
 	raw, err := hex.DecodeString(strings.TrimPrefix(hexStr, "0x"))
