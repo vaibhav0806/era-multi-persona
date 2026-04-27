@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/vaibhav0806/era-multi-persona/era-brain/brain"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/inft"
 	"github.com/vaibhav0806/era/internal/audit"
 	"github.com/vaibhav0806/era/internal/budget"
 	"github.com/vaibhav0806/era/internal/db"
@@ -61,11 +63,14 @@ type Swarm interface {
 	Review(ctx context.Context, args swarm.ReviewArgs) (swarm.ReviewResult, error)
 }
 
-// INFTProvider is the queue's view of the iNFT registry: just RecordInvocation.
-// Defined here so queue tests can inject a stub without pulling the full
-// era-brain.inft.Registry interface (Mint/Lookup are out of M7-D.2 scope).
+// INFTProvider is the queue's view of the iNFT registry. M7-D.2 added
+// RecordInvocation; M7-F.3 added Mint so Queue.MintPersona can land a new
+// PersonaNFT on-chain. Lookup stays out of scope — the SQLite registry is
+// the canonical name → token_id map; on-chain reads are done via a
+// read-only ERC-7857 client elsewhere if needed.
 type INFTProvider interface {
 	RecordInvocation(ctx context.Context, tokenID, receiptHashHex string) error
+	Mint(ctx context.Context, name, systemPromptURI string) (inft.Persona, error)
 }
 
 // Persona is the local-DB row for a minted PersonaNFT. The registry is the
@@ -74,6 +79,25 @@ type INFTProvider interface {
 // shared internal/persona package to avoid an internal/db ↔ internal/queue
 // import cycle while keeping the queue-facing name.
 type Persona = persona.Persona
+
+// ENSWriter is the queue's view of the ENS provider — adds + reads subnames.
+// Implemented by *ens.Provider after M7-E.1. Distinct from the notifier's
+// read-only ENSResolver (used by ensFooter) — both interfaces are satisfied
+// by the same *ens.Provider instance, but the queue needs the write-side
+// methods (EnsureSubname, SetTextRecord) for /persona-mint.
+type ENSWriter interface {
+	EnsureSubname(ctx context.Context, label string) error
+	SetTextRecord(ctx context.Context, label, key, value string) error
+	ParentName() string
+}
+
+// PromptStorage is the queue's view of the 0G storage prompt-blob client.
+// Implemented by *zg_storage.Client. Used by Queue.MintPersona to upload
+// the system prompt before minting and (eventually) by reads at run-time.
+type PromptStorage interface {
+	UploadPrompt(ctx context.Context, content string) (uri string, err error)
+	FetchPrompt(ctx context.Context, uri string) (string, error)
+}
 
 // PersonaRegistry is the queue's view of the persona store. Implementations:
 // *db.Repo (prod), in-memory stub (tests). Lookup/List are read paths;
@@ -185,7 +209,10 @@ type Queue struct {
 	running          *RunningSet     // initialized in New
 	swarm            Swarm           // may be nil
 	userID           string
-	inft             INFTProvider // may be nil
+	inft             INFTProvider    // may be nil
+	ensWriter        ENSWriter       // may be nil
+	zgStorage        PromptStorage   // may be nil
+	personas         PersonaRegistry // may be nil
 }
 
 func New(repo *db.Repo, runner Runner, tokens TokenSource, compare DiffSource, repoFQN string) *Queue {
@@ -215,6 +242,18 @@ func (q *Queue) SetUserID(id string) { q.userID = id }
 // an Invocation event per persona LLM run after each successful Plan/Review.
 // Failures are non-fatal — logged via slog.Warn.
 func (q *Queue) SetINFT(p INFTProvider) { q.inft = p }
+
+// SetENSWriter attaches an ENS write-side provider. Required for
+// Queue.MintPersona to register subnames; nil = ENS sync is a no-op.
+func (q *Queue) SetENSWriter(w ENSWriter) { q.ensWriter = w }
+
+// SetPromptStorage attaches a 0G prompt-blob client. Required for
+// Queue.MintPersona to upload the system prompt before minting.
+func (q *Queue) SetPromptStorage(s PromptStorage) { q.zgStorage = s }
+
+// SetPersonas attaches a PersonaRegistry. Required for Queue.MintPersona
+// (duplicate pre-check + insert) and Queue.ListPersonas (read).
+func (q *Queue) SetPersonas(p PersonaRegistry) { q.personas = p }
 
 func (q *Queue) CreateAskTask(ctx context.Context, desc, targetRepo string) (int64, error) {
 	task, err := q.repo.CreateAskTask(ctx, desc, targetRepo)
@@ -755,6 +794,99 @@ func (q *Queue) RetryTask(ctx context.Context, id int64) (int64, error) {
 	_ = q.repo.AppendEvent(ctx, newTask.ID, "retried_from",
 		fmt.Sprintf(`{"original_task_id":%d}`, id))
 	return newTask.ID, nil
+}
+
+// MintPersona orchestrates a /persona-mint Telegram command end-to-end:
+//
+//  1. Pre-check that no persona with this name exists in the SQLite registry.
+//     We re-check on-chain implicitly via the registry contract's name
+//     uniqueness constraint, but the DB pre-check saves a doomed gas spend.
+//  2. Upload the prompt body to 0G Storage and capture the URI.
+//  3. Mint the iNFT (the contract stores the URI on-chain alongside the token).
+//  4. Best-effort ENS sync: register subname + 4 text records. Failure is
+//     logged and the row is inserted with ENSSubname empty so Phase 5's
+//     boot-time reconcile pass retries.
+//  5. Insert into the SQLite registry — the canonical name → token_id map
+//     used by /task --persona=<name> and /personas.
+//
+// Returns telegram.PersonaMintResult so the handler can render token id +
+// chainscan + ENS link in the success DM. ErrPersonaNameTaken bubbles up
+// unwrapped so the handler can match with errors.Is.
+func (q *Queue) MintPersona(ctx context.Context, name, prompt string) (telegram.PersonaMintResult, error) {
+	if q.personas == nil {
+		return telegram.PersonaMintResult{}, errors.New("persona registry not wired (PI_DB_PATH missing)")
+	}
+	if q.zgStorage == nil {
+		return telegram.PersonaMintResult{}, errors.New("0G storage not wired (PI_ZG_STORAGE_RPC missing)")
+	}
+	if q.inft == nil {
+		return telegram.PersonaMintResult{}, errors.New("iNFT not wired (PI_ZG_INFT_CONTRACT_ADDRESS missing)")
+	}
+
+	// 0. Duplicate pre-check.
+	if _, err := q.personas.Lookup(ctx, name); err == nil {
+		return telegram.PersonaMintResult{}, ErrPersonaNameTaken
+	} else if !errors.Is(err, ErrPersonaNotFound) {
+		return telegram.PersonaMintResult{}, fmt.Errorf("lookup: %w", err)
+	}
+
+	// 1. Upload prompt to 0G Storage.
+	uri, err := q.zgStorage.UploadPrompt(ctx, prompt)
+	if err != nil {
+		return telegram.PersonaMintResult{}, fmt.Errorf("upload prompt: %w", err)
+	}
+
+	// 2. Mint iNFT.
+	minted, err := q.inft.Mint(ctx, name, uri)
+	if err != nil {
+		return telegram.PersonaMintResult{}, fmt.Errorf("mint: %w", err)
+	}
+
+	// Build the SQLite row early so SyncPersonaENSRecords + Insert share fields.
+	desc := prompt
+	if len(desc) > 60 {
+		desc = desc[:60]
+	}
+	row := Persona{
+		TokenID:         minted.TokenID,
+		Name:            name,
+		OwnerAddr:       minted.OwnerAddr,
+		SystemPromptURI: uri,
+		Description:     desc,
+	}
+
+	// 3. Best-effort ENS sync. On failure leave row.ENSSubname empty so the
+	// Phase 5 reconcile pass retries.
+	if q.ensWriter != nil {
+		inftAddr := os.Getenv("PI_ZG_INFT_CONTRACT_ADDRESS")
+		if err := SyncPersonaENSRecords(ctx, q.ensWriter, row, inftAddr); err != nil {
+			slog.Warn("persona-mint ens sync failed", "name", name, "err", err)
+		} else {
+			row.ENSSubname = name + "." + q.ensWriter.ParentName()
+		}
+	}
+
+	// 4. Insert into SQLite registry.
+	if err := q.personas.Insert(ctx, row); err != nil {
+		return telegram.PersonaMintResult{}, fmt.Errorf("registry insert: %w", err)
+	}
+
+	return telegram.PersonaMintResult{
+		TokenID:         minted.TokenID,
+		MintTxHash:      minted.MintTxHash,
+		ENSSubname:      row.ENSSubname,
+		SystemPromptURI: uri,
+	}, nil
+}
+
+// ListPersonas is a thin pass-through to the registry's List for the
+// /personas Telegram command. Returns an empty slice (not nil) when the
+// registry is not wired so the handler renders the empty-list hint.
+func (q *Queue) ListPersonas(ctx context.Context) ([]Persona, error) {
+	if q.personas == nil {
+		return nil, nil
+	}
+	return q.personas.List(ctx)
 }
 
 // compile-time assertion that Queue satisfies telegram.Ops

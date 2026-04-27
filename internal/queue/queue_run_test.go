@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/vaibhav0806/era-multi-persona/era-brain/brain"
+	"github.com/vaibhav0806/era-multi-persona/era-brain/inft"
 	"github.com/vaibhav0806/era/internal/audit"
 	"github.com/vaibhav0806/era/internal/db"
 	"github.com/vaibhav0806/era/internal/diffscan"
@@ -904,6 +905,13 @@ func (s *stubINFT) RecordInvocation(_ context.Context, tokenID, receiptHashHex s
 		return errors.New("stubINFT: simulated first-call failure")
 	}
 	return nil
+}
+
+// Mint satisfies the INFTProvider interface extension added in M7-F.3.
+// queue_run_test only exercises RunNext (which never calls Mint), so this
+// returns a zero Persona unconditionally.
+func (s *stubINFT) Mint(_ context.Context, _, _ string) (inft.Persona, error) {
+	return inft.Persona{}, nil
 }
 
 func TestRunNext_RecordsInvocationForPlannerAndReviewer(t *testing.T) {

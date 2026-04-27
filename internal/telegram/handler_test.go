@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/vaibhav0806/era/internal/db"
+	"github.com/vaibhav0806/era/internal/persona"
 	"github.com/vaibhav0806/era/internal/stats"
 )
 
@@ -41,6 +42,15 @@ type stubOps struct {
 
 	// AL-3: stats
 	statsResult stats.Stats
+
+	// M7-F.3: persona ops
+	mintCalled bool
+	mintName   string
+	mintPrompt string
+	mintErr    error
+	mintResult PersonaMintResult
+	listResult []persona.Persona
+	listErr    error
 }
 
 func (s *stubOps) CreateTask(ctx context.Context, desc, targetRepo, profile string) (int64, error) {
@@ -95,6 +105,17 @@ func (s *stubOps) CreateAskTask(ctx context.Context, desc, targetRepo string) (i
 
 func (s *stubOps) Stats(ctx context.Context) (stats.Stats, error) {
 	return s.statsResult, nil
+}
+
+func (s *stubOps) MintPersona(ctx context.Context, name, prompt string) (PersonaMintResult, error) {
+	s.mintCalled = true
+	s.mintName = name
+	s.mintPrompt = prompt
+	return s.mintResult, s.mintErr
+}
+
+func (s *stubOps) ListPersonas(ctx context.Context) ([]persona.Persona, error) {
+	return s.listResult, s.listErr
 }
 
 // compile-time assertion that stubOps satisfies Ops
@@ -375,4 +396,88 @@ func TestHandler_StatsCommand_SendsFormattedDM(t *testing.T) {
 	require.Contains(t, body, "5")
 	require.Contains(t, body, "80")
 	require.Contains(t, body, "queue: 0 pending")
+}
+
+func TestHandle_PersonaMint_Success(t *testing.T) {
+	ops := &stubOps{
+		mintResult: PersonaMintResult{
+			TokenID:         "3",
+			MintTxHash:      "0xabc",
+			ENSSubname:      "rustacean.vaibhav-era.eth",
+			SystemPromptURI: "zg://hash",
+		},
+	}
+	fc := NewFakeClient()
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
+
+	require.NoError(t, h.Handle(context.Background(), Update{
+		ChatID: 1,
+		Text:   "/persona-mint rustacean You only write idiomatic Rust code. Never compromise on memory safety or borrow-checker correctness.",
+	}))
+
+	require.True(t, ops.mintCalled)
+	require.Equal(t, "rustacean", ops.mintName)
+	require.Contains(t, ops.mintPrompt, "idiomatic Rust")
+	require.NotEmpty(t, fc.Sent)
+	last := fc.Sent[len(fc.Sent)-1].Text
+	require.Contains(t, last, "token #3")
+	require.Contains(t, last, "rustacean.vaibhav-era.eth")
+	require.Contains(t, last, "0xabc")
+	require.Contains(t, last, "zg://hash")
+}
+
+func TestHandle_PersonaMint_InvalidName_NoChainCalls(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"uppercase", "/persona-mint RustLover prompt text long enough to satisfy minimum length"},
+		{"too_short", "/persona-mint xy prompt text long enough to satisfy minimum length"},
+		{"reserved_planner", "/persona-mint planner prompt text long enough to satisfy minimum length"},
+		{"reserved_coder", "/persona-mint coder prompt text long enough to satisfy minimum length"},
+		{"reserved_reviewer", "/persona-mint reviewer prompt text long enough to satisfy minimum length"},
+		{"empty_prompt", "/persona-mint rustacean"},
+		{"prompt_too_short", "/persona-mint rustacean tiny"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ops := &stubOps{}
+			fc := NewFakeClient()
+			h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
+			require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: c.text}))
+			require.False(t, ops.mintCalled, "should not call MintPersona on invalid input")
+			require.NotEmpty(t, fc.Sent)
+		})
+	}
+}
+
+func TestHandle_PersonaMint_DuplicateName(t *testing.T) {
+	ops := &stubOps{mintErr: persona.ErrPersonaNameTaken}
+	fc := NewFakeClient()
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
+	require.NoError(t, h.Handle(context.Background(), Update{
+		ChatID: 1,
+		Text:   "/persona-mint rustacean You only write idiomatic Rust code, no exceptions whatsoever.",
+	}))
+	require.NotEmpty(t, fc.Sent)
+	last := fc.Sent[len(fc.Sent)-1].Text
+	require.Contains(t, last, "already taken")
+}
+
+func TestHandle_Personas_Lists(t *testing.T) {
+	ops := &stubOps{
+		listResult: []persona.Persona{
+			{TokenID: "0", Name: "planner", ENSSubname: "planner.vaibhav-era.eth", Description: "default planner"},
+			{TokenID: "3", Name: "rustacean", ENSSubname: "rustacean.vaibhav-era.eth", Description: "Rust-only persona"},
+		},
+	}
+	fc := NewFakeClient()
+	h := NewHandler(fc, ops, nil, "vaibhav0806/sandbox")
+	require.NoError(t, h.Handle(context.Background(), Update{ChatID: 1, Text: "/personas"}))
+	require.NotEmpty(t, fc.Sent)
+	body := fc.Sent[len(fc.Sent)-1].Text
+	require.Contains(t, body, "planner.vaibhav-era.eth")
+	require.Contains(t, body, "rustacean.vaibhav-era.eth")
+	require.Contains(t, body, "#0")
+	require.Contains(t, body, "#3")
 }

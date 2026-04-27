@@ -11,6 +11,7 @@ import (
 
 	"github.com/vaibhav0806/era/internal/budget"
 	"github.com/vaibhav0806/era/internal/db"
+	"github.com/vaibhav0806/era/internal/persona"
 	"github.com/vaibhav0806/era/internal/replyprompt"
 	"github.com/vaibhav0806/era/internal/stats"
 )
@@ -60,9 +61,26 @@ type TaskSummary struct {
 	BranchName  string
 }
 
+// PersonaMintResult bundles the persona-mint output the handler renders into
+// the Telegram DM. ENSSubname may be empty when ENS isn't wired or when the
+// post-mint sync failed (Phase 5 reconcile retries those cases). MintTxHash
+// is populated by the iNFT provider; SystemPromptURI is the 0G Storage URI
+// returned by PromptStorage.UploadPrompt before the mint call.
+type PersonaMintResult struct {
+	TokenID         string
+	MintTxHash      string
+	ENSSubname      string
+	SystemPromptURI string
+}
+
 // Ops is the subset of orchestrator functionality the handler needs. Kept
 // narrow so we can stub it in tests. Implemented by internal/queue.Queue in
 // Task 10.
+//
+// M7-F.3 added MintPersona + ListPersonas for the /persona-mint and
+// /personas commands. The persona row type is internal/persona.Persona —
+// imported directly here to avoid a queue ↔ telegram import cycle (the
+// queue package re-exports it as queue.Persona for its own callers).
 type Ops interface {
 	CreateTask(ctx context.Context, desc, targetRepo, profile string) (int64, error)
 	CreateAskTask(ctx context.Context, desc, targetRepo string) (int64, error)
@@ -74,6 +92,10 @@ type Ops interface {
 	CancelTask(ctx context.Context, id int64) error
 	RetryTask(ctx context.Context, id int64) (newID int64, err error)
 	Stats(ctx context.Context) (stats.Stats, error)
+
+	// M7-F.3: persona registry ops.
+	MintPersona(ctx context.Context, name, systemPrompt string) (PersonaMintResult, error)
+	ListPersonas(ctx context.Context) ([]persona.Persona, error)
 }
 
 type Handler struct {
@@ -220,6 +242,53 @@ func (h *Handler) Handle(ctx context.Context, u Update) error {
 		_, err = h.client.SendMessage(ctx, u.ChatID, formatStatsDM(s))
 		return err
 
+	case strings.HasPrefix(text, "/persona-mint "):
+		args := strings.TrimSpace(strings.TrimPrefix(text, "/persona-mint "))
+		name, prompt, perr := parsePersonaMintArgs(args)
+		if perr != nil {
+			_, sErr := h.client.SendMessage(ctx, u.ChatID,
+				"usage: /persona-mint <name> <prompt>\n"+
+					"  name: 3-32 chars, lowercase letters/digits/dashes, not 'planner'/'coder'/'reviewer'\n"+
+					"  prompt: 20-4000 chars\n"+
+					"  error: "+perr.Error())
+			return sErr
+		}
+		res, err := h.ops.MintPersona(ctx, name, prompt)
+		if errors.Is(err, persona.ErrPersonaNameTaken) {
+			_, sErr := h.client.SendMessage(ctx, u.ChatID,
+				fmt.Sprintf("name %q already taken — pick another", name))
+			return sErr
+		}
+		if err != nil {
+			_, sErr := h.client.SendMessage(ctx, u.ChatID, fmt.Sprintf("mint failed: %v", err))
+			return sErr
+		}
+		body := fmt.Sprintf("✓ persona %q minted as token #%s", name, res.TokenID)
+		if res.MintTxHash != "" {
+			body += fmt.Sprintf("\n  chainscan: https://chainscan-galileo.0g.ai/tx/%s", res.MintTxHash)
+		}
+		if res.ENSSubname != "" {
+			body += fmt.Sprintf("\n  ens: https://sepolia.app.ens.domains/%s", res.ENSSubname)
+		}
+		if res.SystemPromptURI != "" {
+			body += fmt.Sprintf("\n  prompt: %s", res.SystemPromptURI)
+		}
+		_, err = h.client.SendMessage(ctx, u.ChatID, body)
+		return err
+
+	case text == "/persona-mint":
+		_, err := h.client.SendMessage(ctx, u.ChatID, "usage: /persona-mint <name> <prompt>")
+		return err
+
+	case text == "/personas":
+		list, err := h.ops.ListPersonas(ctx)
+		if err != nil {
+			_, sErr := h.client.SendMessage(ctx, u.ChatID, fmt.Sprintf("error: %v", err))
+			return sErr
+		}
+		_, err = h.client.SendMessage(ctx, u.ChatID, formatPersonasDM(list))
+		return err
+
 	default:
 		_, err := h.client.SendMessage(ctx, u.ChatID, "unknown command. try /task, /ask, /status, /list, /cancel, /retry, /stats")
 		return err
@@ -277,6 +346,69 @@ queue: %d pending`,
 		costStr(s.Last24h.CostCents), costStr(s.Last7d.CostCents), costStr(s.Last30d.CostCents),
 		s.PendingQueue,
 	)
+}
+
+// personaNameRE matches the on-chain canonical persona name shape: 3-32
+// chars, lowercase alphanumerics + dashes only. Mirrors the constraint
+// applied by the registry contract so we reject bad names client-side
+// before paying gas.
+var personaNameRE = regexp.MustCompile(`^[a-z0-9-]{3,32}$`)
+
+// reservedPersonaNames are pre-minted by the orchestrator boot path
+// (planner=token #0, coder=token #1, reviewer=token #2). Re-minting them
+// would conflict; reject early.
+var reservedPersonaNames = map[string]bool{
+	"planner":  true,
+	"coder":    true,
+	"reviewer": true,
+}
+
+// parsePersonaMintArgs splits "<name> <prompt>" and validates both halves.
+// Returns (name, prompt, nil) on success. On any failure the error message
+// is human-readable and surfaced verbatim to the Telegram user.
+func parsePersonaMintArgs(s string) (string, string, error) {
+	parts := strings.SplitN(strings.TrimSpace(s), " ", 2)
+	if len(parts) < 2 {
+		return "", "", errors.New("missing prompt")
+	}
+	name := parts[0]
+	prompt := strings.TrimSpace(parts[1])
+
+	if !personaNameRE.MatchString(name) {
+		return "", "", errors.New("invalid name (must be 3-32 lowercase alphanumerics + dashes)")
+	}
+	if reservedPersonaNames[name] {
+		return "", "", fmt.Errorf("name %q is reserved", name)
+	}
+	if len(prompt) < 20 {
+		return "", "", errors.New("prompt too short (min 20 chars)")
+	}
+	if len(prompt) > 4000 {
+		return "", "", errors.New("prompt too long (max 4000 chars)")
+	}
+	return name, prompt, nil
+}
+
+// formatPersonasDM renders the /personas listing for the user. Empty list
+// gets a hint to mint instead of a blank message.
+func formatPersonasDM(personas []persona.Persona) string {
+	if len(personas) == 0 {
+		return "no personas yet — try /persona-mint <name> <prompt>"
+	}
+	var b strings.Builder
+	b.WriteString("era personas\n────────────\n")
+	for _, p := range personas {
+		desc := p.Description
+		if len(desc) > 50 {
+			desc = desc[:50] + "…"
+		}
+		ens := p.ENSSubname
+		if ens == "" {
+			ens = "(no ens)"
+		}
+		fmt.Fprintf(&b, "#%s  %s · %s\n", p.TokenID, ens, desc)
+	}
+	return b.String()
 }
 
 func pctStr(x float64) string { return fmt.Sprintf("%.0f%%", x*100) }
