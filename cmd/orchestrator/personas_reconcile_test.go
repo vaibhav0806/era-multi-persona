@@ -65,6 +65,18 @@ func (r *inMemoryRegistry) UpdateENSSubname(_ context.Context, name, subname str
 	return nil
 }
 
+// GetPersonaPrompt mirrors *db.Repo: row exists with no cached prompt → "" + nil;
+// missing row → ErrPersonaNotFound.
+func (r *inMemoryRegistry) GetPersonaPrompt(_ context.Context, name string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.rows[name]
+	if !ok {
+		return "", queue.ErrPersonaNotFound
+	}
+	return p.PromptText, nil
+}
+
 // stubENSWriter records EnsureSubname / SetTextRecord calls for reconcileENS
 // assertions. ParentName is configurable. Distinct from notifier_ens_test.go's
 // stubENS (read-only) so both can coexist in package main tests.

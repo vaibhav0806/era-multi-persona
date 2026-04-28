@@ -998,7 +998,8 @@ func TestRunNext_NoINFTProviderSkipsRecording(t *testing.T) {
 // resolution tests. Lookup returns ErrPersonaNotFound for any name not in
 // the rows map, mirroring the prod sqlite registry.
 type stubPersonas struct {
-	rows map[string]persona.Persona
+	rows    map[string]persona.Persona
+	prompts map[string]string // M7-F.6 — SQLite cache equivalent for GetPersonaPrompt
 }
 
 func (s *stubPersonas) Lookup(_ context.Context, name string) (persona.Persona, error) {
@@ -1011,6 +1012,15 @@ func (s *stubPersonas) List(_ context.Context) ([]persona.Persona, error) { retu
 func (s *stubPersonas) Insert(_ context.Context, _ persona.Persona) error { return nil }
 func (s *stubPersonas) UpdateENSSubname(_ context.Context, _, _ string) error {
 	return nil
+}
+func (s *stubPersonas) GetPersonaPrompt(_ context.Context, name string) (string, error) {
+	if v, ok := s.prompts[name]; ok {
+		return v, nil
+	}
+	if _, ok := s.rows[name]; ok {
+		return "", nil // row exists, no prompt cached
+	}
+	return "", queue.ErrPersonaNotFound
 }
 
 // stubPromptStorage implements queue.PromptStorage. FetchPrompt returns the
@@ -1045,8 +1055,10 @@ func TestRunNext_PersonaTask_PrependsPromptAndUsesCustomTokenID(t *testing.T) {
 				TokenID:         "3",
 				Name:            "rustacean",
 				SystemPromptURI: "zg://rust-prompt",
+				PromptText:      "You only write idiomatic Rust.",
 			},
 		},
+		prompts: map[string]string{"rustacean": "You only write idiomatic Rust."},
 	}
 	q.SetPersonas(personas)
 
@@ -1116,8 +1128,10 @@ func TestRunNext_CustomPersona_FreshNamespace_NoError(t *testing.T) {
 				TokenID:         "7",
 				Name:            "fresh-persona",
 				SystemPromptURI: "zg://fresh",
+				PromptText:      "be fresh",
 			},
 		},
+		prompts: map[string]string{"fresh-persona": "be fresh"},
 	}
 	q.SetPersonas(personas)
 	q.SetPromptStorage(&stubPromptStorage{
@@ -1134,4 +1148,46 @@ func TestRunNext_CustomPersona_FreshNamespace_NoError(t *testing.T) {
 	require.True(t, processed)
 	require.Len(t, n.completed, 1)
 	require.Empty(t, n.failed)
+}
+
+func TestRunNext_PersonaTask_FetchesPromptFromSQLiteWhenZGFails(t *testing.T) {
+	// Mints a persona with PromptText cached in stubPersonas.
+	// stubPromptStorage's FetchPrompt is configured to fail (simulating 0G KV
+	// flakiness). Task should still complete because the queue falls back to
+	// SQLite via the persona registry's GetPersonaPrompt method.
+
+	fr := &fakeRunner{branch: "agent/1/ok", summary: "ok"}
+	q, repo := newRunQueue(t, fr)
+
+	stub := &stubSwarm{planText: "1.", plannerSealed: true, reviewDecision: swarm.DecisionApprove}
+	q.SetSwarm(stub)
+	q.SetUserID("u")
+
+	personas := &stubPersonas{
+		rows: map[string]persona.Persona{
+			"rustacean": {
+				TokenID:         "4",
+				Name:            "rustacean",
+				SystemPromptURI: "zg://broken",
+				PromptText:      "RUSTACEAN-LOCAL-CACHED-PROMPT",
+			},
+		},
+		prompts: map[string]string{"rustacean": "RUSTACEAN-LOCAL-CACHED-PROMPT"},
+	}
+	storage := &stubPromptStorage{
+		fetchErr: errors.New("zg_storage fetch: memory: not found"), // simulate 0G KV miss
+	}
+	q.SetPersonas(personas)
+	q.SetPromptStorage(storage)
+
+	q.SetINFT(&stubINFT{})
+
+	_, err := repo.CreateTask(context.Background(), "fix auth", "owner/repo", "default", "rustacean")
+	require.NoError(t, err)
+	processed, err := q.RunNext(context.Background())
+	require.NoError(t, err)
+	require.True(t, processed)
+
+	// Pi (fakeRunner) should have seen the SQLite-cached prompt, NOT errored on the 0G failure.
+	require.Contains(t, fr.lastDes, "RUSTACEAN-LOCAL-CACHED-PROMPT")
 }

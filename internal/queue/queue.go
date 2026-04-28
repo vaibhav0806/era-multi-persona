@@ -109,6 +109,7 @@ type PersonaRegistry interface {
 	List(ctx context.Context) ([]Persona, error)
 	Insert(ctx context.Context, p Persona) error
 	UpdateENSSubname(ctx context.Context, name, subname string) error
+	GetPersonaPrompt(ctx context.Context, name string) (string, error) // M7-F.6 — SQLite-cached prompt for fast/reliable fetch; fallback chain prefers this over 0G KV
 }
 
 // Sentinel errors returned by PersonaRegistry implementations. Re-exported
@@ -380,10 +381,7 @@ func (q *Queue) RunNext(ctx context.Context) (bool, error) {
 		if err != nil {
 			return failPersona(fmt.Sprintf("persona %q: %v", t.PersonaName, err))
 		}
-		if q.zgStorage == nil {
-			return failPersona(fmt.Sprintf("persona %q: prompt storage not wired", t.PersonaName))
-		}
-		prompt, err := q.zgStorage.FetchPrompt(ctx, p.SystemPromptURI)
+		prompt, err := q.fetchPersonaPrompt(ctx, p)
 		if err != nil {
 			return failPersona(fmt.Sprintf("persona %q: fetch prompt: %v", t.PersonaName, err))
 		}
@@ -857,6 +855,28 @@ func (q *Queue) RetryTask(ctx context.Context, id int64) (int64, error) {
 	return newTask.ID, nil
 }
 
+// fetchPersonaPrompt returns the prompt text for a persona. SQLite-first
+// (fast, reliable), 0G KV fallback (canonical, sometimes flaky on testnet).
+// Returns the first non-empty result; returns the 0G error only if both fail.
+//
+// Empty SQLite cache is treated as a miss (continues to 0G fallback) — this
+// supports personas imported via reconcileFromChain that have no local prompt.
+func (q *Queue) fetchPersonaPrompt(ctx context.Context, p Persona) (string, error) {
+	if q.personas != nil {
+		if cached, err := q.personas.GetPersonaPrompt(ctx, p.Name); err == nil && cached != "" {
+			return cached, nil
+		}
+	}
+	if q.zgStorage == nil {
+		return "", fmt.Errorf("no SQLite-cached prompt and 0G storage not wired")
+	}
+	prompt, err := q.zgStorage.FetchPrompt(ctx, p.SystemPromptURI)
+	if err != nil {
+		return "", fmt.Errorf("sqlite cache miss + 0G fetch failed: %w", err)
+	}
+	return prompt, nil
+}
+
 // MintPersona orchestrates a /persona-mint Telegram command end-to-end:
 //
 //  1. Pre-check that no persona with this name exists in the SQLite registry.
@@ -914,6 +934,7 @@ func (q *Queue) MintPersona(ctx context.Context, name, prompt string) (telegram.
 		OwnerAddr:       minted.OwnerAddr,
 		SystemPromptURI: uri,
 		Description:     desc,
+		PromptText:      prompt, // M7-F.6 — SQLite cache for fast/reliable fetch
 	}
 
 	// 3. Best-effort ENS sync. On failure leave row.ENSSubname empty so the
