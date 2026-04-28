@@ -325,17 +325,30 @@ type PersonaRegistry interface {
 }
 ```
 
-The compile-time assertion `var _ PersonaRegistry = (*db.Repo)(nil)` will catch any impl gap. Add adapter on `Repo` if not already present:
+The compile-time assertion `var _ PersonaRegistry = (*db.Repo)(nil)` catches the production impl. The Phase 1 `Repo.GetPersonaPrompt` method already satisfies it.
 
+### Step 2.3.5: Find + update every test stub of `PersonaRegistry`
+
+```bash
+grep -rn "PersonaRegistry\|stubPersonas\|inMemoryRegistry" --include='*.go' /Users/vaibhav/Documents/projects/era-multi-persona/era/
+```
+
+Expected hits (must update each to add `GetPersonaPrompt`):
+- `internal/queue/queue_run_test.go` — `stubPersonas` (extended in Step 2.1 above with `prompts` field; just add the method body shown)
+- `cmd/orchestrator/personas_reconcile_test.go` — `inMemoryRegistry` (M7-F.5 test fake; needs new method)
+- Any other test files that hit it
+
+For each test fake, add:
 ```go
-// internal/db/personas.go
-func (r *Repo) GetPersonaPrompt(ctx context.Context, name string) (string, error) {
-	// already added in Phase 1 — this is the adapter for queue.PersonaRegistry
-	// (lowercase signature matches; just confirm the existing method satisfies the interface)
+func (s *<stubname>) GetPersonaPrompt(_ context.Context, name string) (string, error) {
+    // mirror the production semantics: row exists with no cached prompt → "" + nil; not found → ErrPersonaNotFound
+    if v, ok := s.prompts[name]; ok { return v, nil }
+    if _, ok := s.personas[name]; ok { return "", nil }
+    return "", queue.ErrPersonaNotFound
 }
 ```
 
-(The Phase 1 method already matches the interface signature — no extra adapter needed.)
+Run `go build ./...` after each edit. The compile errors guide you to every implementer that needs updating.
 
 ### Step 2.4: Add `fetchPersonaPrompt` helper + use in RunNext
 
@@ -504,7 +517,7 @@ git push --tags
 
 ## Risks + cuts list
 
-1. **Existing `rustacean` token #4 stays orphaned.** No prompt in SQLite (M7-F.6 only writes for new mints). Acceptable — just don't use it in the demo. M7-F.6 doesn't include backfill from 0G; would require a one-shot CLI tool.
+1. **Imported personas (any reconcileFromChain row, including the orphaned `rustacean` token #4) hit the 0G-fallback path** — same M7-F.5 failure mode if 0G KV is unhealthy. No prompt in SQLite means `fetchPersonaPrompt` falls through to `q.zgStorage.FetchPrompt`, which is exactly what failed before. Acceptable for demo: don't use orphaned imports; mint fresh personas. Backfill (one-shot job that fetches all imported personas' prompts from 0G into SQLite) is M7-F.7 if needed.
 2. **Migration on existing DB** — `ALTER TABLE ... ADD COLUMN` with `DEFAULT ''` is a fast metadata-only operation in SQLite. No risk.
 3. **`stubPersonas` test doubles need updating in 2-3 places.** Phase 2.7 catches this; if a test still references the old shape, the build will fail loudly.
 
