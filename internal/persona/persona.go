@@ -21,6 +21,7 @@ type Persona struct {
 	SystemPromptURI string
 	ENSSubname      string
 	Description     string
+	PromptText      string
 	CreatedAt       time.Time
 }
 

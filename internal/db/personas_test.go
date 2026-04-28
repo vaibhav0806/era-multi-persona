@@ -87,3 +87,46 @@ func TestPersonas_List(t *testing.T) {
 	require.Equal(t, "2", list[1].TokenID)
 	require.Equal(t, "10", list[2].TokenID)
 }
+
+func TestPersonas_InsertWithPromptText(t *testing.T) {
+	ctx := context.Background()
+	r := openTest(t)
+
+	require.NoError(t, r.InsertPersona(ctx, queue.Persona{
+		TokenID:         "1",
+		Name:            "alice",
+		OwnerAddr:       "0xabc",
+		SystemPromptURI: "ipfs://prompt",
+		Description:     "test persona",
+		PromptText:      "You are alice. Be helpful.",
+	}))
+
+	prompt, err := r.GetPersonaPrompt(ctx, "alice")
+	require.NoError(t, err)
+	require.Equal(t, "You are alice. Be helpful.", prompt)
+}
+
+func TestPersonas_GetPrompt_NotFound(t *testing.T) {
+	ctx := context.Background()
+	r := openTest(t)
+
+	_, err := r.GetPersonaPrompt(ctx, "nobody")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, queue.ErrPersonaNotFound), "expected ErrPersonaNotFound, got %v", err)
+}
+
+func TestPersonas_GetPrompt_EmptyPromptIsValid(t *testing.T) {
+	ctx := context.Background()
+	r := openTest(t)
+
+	require.NoError(t, r.InsertPersona(ctx, queue.Persona{
+		TokenID:         "1",
+		Name:            "alice",
+		OwnerAddr:       "0xabc",
+		SystemPromptURI: "ipfs://prompt",
+	}))
+
+	prompt, err := r.GetPersonaPrompt(ctx, "alice")
+	require.NoError(t, err)
+	require.Equal(t, "", prompt)
+}
