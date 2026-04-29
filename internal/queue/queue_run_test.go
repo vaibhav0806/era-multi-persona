@@ -1022,6 +1022,16 @@ func (s *stubPersonas) GetPersonaPrompt(_ context.Context, name string) (string,
 	}
 	return "", queue.ErrPersonaNotFound
 }
+func (s *stubPersonas) UpdatePromptText(_ context.Context, name, content string) error {
+	if _, ok := s.rows[name]; !ok {
+		return queue.ErrPersonaNotFound
+	}
+	if s.prompts == nil {
+		s.prompts = map[string]string{}
+	}
+	s.prompts[name] = content
+	return nil
+}
 
 // stubPromptStorage implements queue.PromptStorage. FetchPrompt returns the
 // content stored under the given URI in `prompts`. UploadPrompt is unused

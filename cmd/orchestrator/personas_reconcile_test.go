@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"testing"
@@ -75,6 +76,20 @@ func (r *inMemoryRegistry) GetPersonaPrompt(_ context.Context, name string) (str
 		return "", queue.ErrPersonaNotFound
 	}
 	return p.PromptText, nil
+}
+
+// UpdatePromptText mirrors *db.Repo: missing row → ErrPersonaNotFound; existing
+// row gets PromptText overwritten in place.
+func (r *inMemoryRegistry) UpdatePromptText(_ context.Context, name, content string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	row, ok := r.rows[name]
+	if !ok {
+		return queue.ErrPersonaNotFound
+	}
+	row.PromptText = content
+	r.rows[name] = row
+	return nil
 }
 
 // stubENSWriter records EnsureSubname / SetTextRecord calls for reconcileENS
@@ -212,4 +227,44 @@ func TestReconcile_TransferScan_ImportsNewMints(t *testing.T) {
 		tokenIDs = append(tokenIDs, p.TokenID)
 	}
 	require.Contains(t, tokenIDs, "3")
+}
+
+func TestReconcile_BackfillPrompts_FetchesAndUpdates(t *testing.T) {
+	registry := newInMemoryRegistry(t)
+	require.NoError(t, registry.Insert(context.Background(), queue.Persona{
+		TokenID: "9", Name: "needs-fill", SystemPromptURI: "zg://aaa",
+	}))
+	require.NoError(t, registry.Insert(context.Background(), queue.Persona{
+		TokenID: "10", Name: "already-cached", SystemPromptURI: "zg://bbb", PromptText: "PRE-EXISTING",
+	}))
+
+	storage := &stubReconcilePromptStorage{
+		prompts: map[string]string{"zg://aaa": "FROM-0G"},
+		// zg://bbb not configured — should not be fetched (already cached)
+	}
+	require.NoError(t, reconcileBackfillPrompts(context.Background(), registry, storage))
+
+	v1, err := registry.GetPersonaPrompt(context.Background(), "needs-fill")
+	require.NoError(t, err)
+	require.Equal(t, "FROM-0G", v1)
+
+	v2, err := registry.GetPersonaPrompt(context.Background(), "already-cached")
+	require.NoError(t, err)
+	require.Equal(t, "PRE-EXISTING", v2, "should not be touched")
+}
+
+func TestReconcile_BackfillPrompts_StorageFailureLogsAndContinues(t *testing.T) {
+	registry := newInMemoryRegistry(t)
+	require.NoError(t, registry.Insert(context.Background(), queue.Persona{
+		TokenID: "9", Name: "broken", SystemPromptURI: "zg://broken",
+	}))
+
+	storage := &stubReconcilePromptStorage{
+		fetchErr: errors.New("0G KV down"),
+	}
+	require.NoError(t, reconcileBackfillPrompts(context.Background(), registry, storage), "non-fatal")
+
+	v, err := registry.GetPersonaPrompt(context.Background(), "broken")
+	require.NoError(t, err)
+	require.Equal(t, "", v, "row stays empty; next boot retries")
 }

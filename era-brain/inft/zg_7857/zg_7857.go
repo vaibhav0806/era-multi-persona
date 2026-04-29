@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -36,6 +37,7 @@ type Config struct {
 type ContractClient interface {
 	bind.ContractBackend
 	bind.DeployBackend
+	BlockNumber(ctx context.Context) (uint64, error) // M7-G — used by ScanNewMints to bound chunked FilterTransfer
 }
 
 type Provider struct {
@@ -181,44 +183,72 @@ type TransferEvent struct {
 	URI     string
 }
 
+// scanChunkSize bounds the FilterTransfer block range per chunk. Galileo
+// (and many production EVM RPCs) reject queries spanning more than ~1k–10k
+// blocks; 1000 is conservative and stays well under any common ceiling.
+const scanChunkSize = uint64(1000)
+
 // ScanNewMints returns all Transfer events with from=0x0, to=signer where
 // the event's tokenID > sinceTokenID. Used by the orchestrator boot reconcile
 // to import personas minted by other clients (or via cast) without era's DM flow.
+//
+// Paginates the FilterTransfer call in scanChunkSize-block windows from 0 to
+// the current head, with a 90-second overall timeout. Required because
+// production RPCs (Galileo) reject single-shot scans of multi-million-block
+// chains with "Block range is too large".
 //
 // tokenURI fetch failures for individual events are logged + skipped (the
 // event itself stays out of the returned slice). A nil error with an empty
 // slice means "scan succeeded, no new mints since sinceTokenID".
 func (p *Provider) ScanNewMints(ctx context.Context, sinceTokenID int64) ([]TransferEvent, error) {
-	zero := common.Address{}
-	iter, err := p.contract.FilterTransfer(
-		&bind.FilterOpts{Context: ctx},
-		[]common.Address{zero},
-		[]common.Address{p.auth.From},
-		nil,
-	)
+	scanCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	head, err := p.client.BlockNumber(scanCtx)
 	if err != nil {
-		return nil, fmt.Errorf("zg_7857 filterTransfer: %w", err)
+		return nil, fmt.Errorf("zg_7857 head block: %w", err)
 	}
-	defer iter.Close()
 
 	var out []TransferEvent
-	for iter.Next() {
-		ev := iter.Event
-		if ev.TokenId.Int64() <= sinceTokenID {
-			continue
+	zero := common.Address{}
+	for start := uint64(0); start <= head; start += scanChunkSize {
+		end := start + scanChunkSize - 1
+		if end > head {
+			end = head
 		}
-		uri, urierr := p.contract.TokenURI(&bind.CallOpts{Context: ctx}, ev.TokenId)
-		if urierr != nil {
-			// Non-fatal — log + skip this event.
-			continue
+
+		iter, err := p.contract.FilterTransfer(
+			&bind.FilterOpts{Context: scanCtx, Start: start, End: &end},
+			[]common.Address{zero},
+			[]common.Address{p.auth.From},
+			nil,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("zg_7857 filterTransfer chunk %d-%d: %w", start, end, err)
 		}
-		out = append(out, TransferEvent{
-			TokenID: ev.TokenId.String(),
-			Owner:   ev.To.Hex(),
-			URI:     uri,
-		})
+		for iter.Next() {
+			ev := iter.Event
+			if ev.TokenId.Int64() <= sinceTokenID {
+				continue
+			}
+			uri, urierr := p.contract.TokenURI(&bind.CallOpts{Context: scanCtx}, ev.TokenId)
+			if urierr != nil {
+				// Non-fatal — log + skip this event.
+				continue
+			}
+			out = append(out, TransferEvent{
+				TokenID: ev.TokenId.String(),
+				Owner:   ev.To.Hex(),
+				URI:     uri,
+			})
+		}
+		if iterErr := iter.Error(); iterErr != nil {
+			iter.Close()
+			return nil, fmt.Errorf("zg_7857 filterTransfer chunk %d-%d iter: %w", start, end, iterErr)
+		}
+		iter.Close()
 	}
-	return out, iter.Error()
+	return out, nil
 }
 
 func DecodeReceiptHash(hexStr string) ([32]byte, error) {

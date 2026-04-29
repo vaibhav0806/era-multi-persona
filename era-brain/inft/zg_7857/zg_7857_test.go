@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"math/big"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -144,4 +145,92 @@ func TestProvider_Mint_HappyPath(t *testing.T) {
 	uri, err := contract.TokenURI(&bind.CallOpts{}, tokenID)
 	require.NoError(t, err)
 	require.Equal(t, "ipfs://prompt-blob", uri)
+}
+
+// stubBlockNumber wraps a real ContractClient but overrides BlockNumber to
+// claim a high head-block, forcing ScanNewMints to paginate across many chunks.
+type stubBlockNumber struct {
+	zg_7857.ContractClient
+	head uint64
+}
+
+func (s *stubBlockNumber) BlockNumber(_ context.Context) (uint64, error) {
+	return s.head, nil
+}
+
+func TestProvider_ScanNewMints_Paginated(t *testing.T) {
+	backend, contract, _, key, addr := deployContractOnSim(t)
+	_ = contract
+
+	keyHex := common.Bytes2Hex(crypto.FromECDSA(key))
+	p, err := zg_7857.NewWithClient(zg_7857.Config{
+		ContractAddress: addr.Hex(),
+		PrivateKey:      keyHex,
+		ChainID:         1337,
+	}, backend.Client())
+	require.NoError(t, err)
+	t.Cleanup(p.Close)
+
+	// simulated.Backend doesn't auto-mine; drive Commit() in parallel so Mint
+	// receipts land. Same pattern as TestProvider_Mint_HappyPath.
+	stopCommit := make(chan struct{})
+	commitDone := make(chan struct{})
+	go func() {
+		defer close(commitDone)
+		for {
+			select {
+			case <-stopCommit:
+				return
+			case <-time.After(50 * time.Millisecond):
+				backend.Commit()
+			}
+		}
+	}()
+
+	_, err = p.Mint(context.Background(), "first", "ipfs://1")
+	require.NoError(t, err)
+	_, err = p.Mint(context.Background(), "second", "ipfs://2")
+	require.NoError(t, err)
+	close(stopCommit)
+	<-commitDone
+
+	// Drive enough commits to push the sim head past several chunks so the
+	// pagination loop iterates more than once. simulated.Client.FilterLogs
+	// rejects End > actual head, so we must mine real blocks (cheap: pure
+	// in-process Commit calls).
+	const targetHead = uint64(2500) // forces 3 chunks at scanChunkSize=1000
+	currentHead, err := backend.Client().BlockNumber(context.Background())
+	require.NoError(t, err)
+	for currentHead < targetHead {
+		backend.Commit()
+		currentHead++
+	}
+
+	// Wrap the client so ScanNewMints reads our chosen head, decoupling the
+	// test from however many extra blocks Commit produced above.
+	stubClient := &stubBlockNumber{
+		ContractClient: backend.Client(),
+		head:           targetHead,
+	}
+
+	pPaginated, err := zg_7857.NewWithClient(zg_7857.Config{
+		ContractAddress: addr.Hex(),
+		PrivateKey:      keyHex,
+		ChainID:         1337,
+	}, stubClient)
+	require.NoError(t, err)
+	t.Cleanup(pPaginated.Close)
+
+	// sinceTokenID=0 — skip token 0 (bootstrap mint from deployContractOnSim)
+	// and assert tokens 1+2 are discovered across multiple chunks.
+	events, err := pPaginated.ScanNewMints(context.Background(), 0)
+	require.NoError(t, err)
+	require.Len(t, events, 2, "expected both mints discovered across chunks")
+
+	tokenIDs := make(map[string]bool)
+	for _, e := range events {
+		tokenIDs[e.TokenID] = true
+	}
+	require.Contains(t, tokenIDs, "1")
+	require.Contains(t, tokenIDs, "2")
 }

@@ -109,7 +109,8 @@ type PersonaRegistry interface {
 	List(ctx context.Context) ([]Persona, error)
 	Insert(ctx context.Context, p Persona) error
 	UpdateENSSubname(ctx context.Context, name, subname string) error
-	GetPersonaPrompt(ctx context.Context, name string) (string, error) // M7-F.6 — SQLite-cached prompt for fast/reliable fetch; fallback chain prefers this over 0G KV
+	GetPersonaPrompt(ctx context.Context, name string) (string, error)         // M7-F.6 — SQLite-cached prompt for fast/reliable fetch; fallback chain prefers this over 0G KV
+	UpdatePromptText(ctx context.Context, name, content string) error          // M7-G — boot-time backfill for rows imported with empty prompt_text
 }
 
 // Sentinel errors returned by PersonaRegistry implementations. Re-exported

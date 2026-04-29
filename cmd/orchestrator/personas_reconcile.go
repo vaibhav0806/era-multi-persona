@@ -53,6 +53,11 @@ func personasReconcile(
 			slog.Warn("personas: ens reconcile failed", "err", err)
 		}
 	}
+	if storage != nil {
+		if err := reconcileBackfillPrompts(ctx, registry, storage); err != nil {
+			slog.Warn("personas: backfill failed", "err", err)
+		}
+	}
 }
 
 // reconcileDefaults INSERT-OR-IGNOREs the 3 builtin personas (planner, coder,
@@ -185,6 +190,44 @@ func reconcileENS(ctx context.Context, registry queue.PersonaRegistry, ensWriter
 	return nil
 }
 
+// reconcileBackfillPrompts fills empty prompt_text fields from 0G storage.
+// Heals personas imported via reconcileFromChain (which has no local prompt)
+// and personas minted before M7-F.6's SQLite cache existed (e.g. M7-F's
+// rustacean token #4). Best-effort: 0G failures log + skip; next boot retries.
+func reconcileBackfillPrompts(ctx context.Context, registry queue.PersonaRegistry, storage queue.PromptStorage) error {
+	if storage == nil {
+		return nil
+	}
+	all, err := registry.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list: %w", err)
+	}
+	for _, p := range all {
+		cached, err := registry.GetPersonaPrompt(ctx, p.Name)
+		if err != nil {
+			slog.Warn("backfill: get cached prompt failed", "name", p.Name, "err", err)
+			continue
+		}
+		if cached != "" {
+			continue
+		}
+		if p.SystemPromptURI == "" {
+			continue
+		}
+		content, err := storage.FetchPrompt(ctx, p.SystemPromptURI)
+		if err != nil {
+			slog.Warn("backfill: fetch prompt from 0G failed", "name", p.Name, "uri", p.SystemPromptURI, "err", err)
+			continue
+		}
+		if err := registry.UpdatePromptText(ctx, p.Name, content); err != nil {
+			slog.Warn("backfill: update prompt_text failed", "name", p.Name, "err", err)
+			continue
+		}
+		slog.Info("backfilled persona prompt from 0G", "name", p.Name, "bytes", len(content))
+	}
+	return nil
+}
+
 // defaultSubname returns "<label>.<parent>" when parent is non-empty, else "".
 // Empty parent means ENS env vars aren't configured; reconcileENS will fill
 // the row in later if/when they are.
@@ -206,6 +249,7 @@ func defaultOwnerAddr() string {
 	}
 	addr, err := signerAddress(key)
 	if err != nil {
+		slog.Warn("personas: defaultOwnerAddr parse failed; using zero address", "err", err)
 		return "0x0000000000000000000000000000000000000000"
 	}
 	return addr

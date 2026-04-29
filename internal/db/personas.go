@@ -24,6 +24,8 @@ const getPersonaPromptSQL = `SELECT prompt_text FROM personas WHERE name = ?`
 
 const updatePersonaENSSubnameSQL = `UPDATE personas SET ens_subname = ? WHERE name = ?`
 
+const updatePromptTextSQL = `UPDATE personas SET prompt_text = ? WHERE name = ?`
+
 func (r *Repo) InsertPersona(ctx context.Context, p persona.Persona) error {
 	_, err := r.q.db.ExecContext(ctx, insertPersonaSQL,
 		p.TokenID,
@@ -124,6 +126,18 @@ func (r *Repo) UpdatePersonaENSSubname(ctx context.Context, name, subname string
 	_, err := r.q.db.ExecContext(ctx, updatePersonaENSSubnameSQL, nullableString(subname), name)
 	if err != nil {
 		return fmt.Errorf("update persona ens_subname: %w", err)
+	}
+	return nil
+}
+
+// UpdatePromptText overwrites the cached prompt body for an existing persona.
+// Used by the boot reconcile pass to backfill rows that were imported from
+// chain (or pre-M7-F.6 mints) where prompt_text was never populated locally.
+// Idempotent: calling with the same content is a no-op write. No row-existence
+// check — non-existent name silently affects 0 rows (callers verify via List).
+func (r *Repo) UpdatePromptText(ctx context.Context, name, content string) error {
+	if _, err := r.q.db.ExecContext(ctx, updatePromptTextSQL, content, name); err != nil {
+		return fmt.Errorf("update prompt_text: %w", err)
 	}
 	return nil
 }

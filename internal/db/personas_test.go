@@ -130,3 +130,26 @@ func TestPersonas_GetPrompt_EmptyPromptIsValid(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "", prompt)
 }
+
+func TestPersonas_UpdatePromptText(t *testing.T) {
+	ctx := context.Background()
+	r := openTest(t)
+
+	require.NoError(t, r.InsertPersona(ctx, queue.Persona{
+		TokenID:         "9",
+		Name:            "needs-backfill",
+		OwnerAddr:       "0xabc",
+		SystemPromptURI: "zg://abc",
+		// PromptText omitted — defaults to empty
+	}))
+
+	got, err := r.GetPersonaPrompt(ctx, "needs-backfill")
+	require.NoError(t, err)
+	require.Equal(t, "", got)
+
+	require.NoError(t, r.UpdatePromptText(ctx, "needs-backfill", "RUSTACEAN-PROMPT"))
+
+	got, err = r.GetPersonaPrompt(ctx, "needs-backfill")
+	require.NoError(t, err)
+	require.Equal(t, "RUSTACEAN-PROMPT", got)
+}
