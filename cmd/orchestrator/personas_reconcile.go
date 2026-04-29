@@ -214,6 +214,12 @@ func reconcileBackfillPrompts(ctx context.Context, registry queue.PersonaRegistr
 		if p.SystemPromptURI == "" {
 			continue
 		}
+		// Only zg:// URIs live in 0G KV storage. Default personas seeded by
+		// reconcileDefaults use raw GitHub metadata URLs from M7-D.1 — those
+		// aren't 0G blobs and shouldn't be fetched here.
+		if !strings.HasPrefix(p.SystemPromptURI, "zg://") {
+			continue
+		}
 		content, err := storage.FetchPrompt(ctx, p.SystemPromptURI)
 		if err != nil {
 			slog.Warn("backfill: fetch prompt from 0G failed", "name", p.Name, "uri", p.SystemPromptURI, "err", err)

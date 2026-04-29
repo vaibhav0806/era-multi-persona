@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -129,8 +130,9 @@ func (s *stubTransferScanner) ScanNewMints(_ context.Context, _ int64) ([]Transf
 // stubReconcilePromptStorage implements queue.PromptStorage for reconcile tests.
 // (Named distinctly from any other stub elsewhere in the package.)
 type stubReconcilePromptStorage struct {
-	prompts  map[string]string
-	fetchErr error
+	prompts    map[string]string
+	fetchErr   error
+	fetchCalls []string // M7-G.1: tracks URIs passed to FetchPrompt for skip-non-zg assertions
 }
 
 func (s *stubReconcilePromptStorage) UploadPrompt(_ context.Context, _ string) (string, error) {
@@ -138,6 +140,7 @@ func (s *stubReconcilePromptStorage) UploadPrompt(_ context.Context, _ string) (
 }
 
 func (s *stubReconcilePromptStorage) FetchPrompt(_ context.Context, uri string) (string, error) {
+	s.fetchCalls = append(s.fetchCalls, uri)
 	if s.fetchErr != nil {
 		return "", s.fetchErr
 	}
@@ -251,6 +254,43 @@ func TestReconcile_BackfillPrompts_FetchesAndUpdates(t *testing.T) {
 	v2, err := registry.GetPersonaPrompt(context.Background(), "already-cached")
 	require.NoError(t, err)
 	require.Equal(t, "PRE-EXISTING", v2, "should not be touched")
+}
+
+// M7-G.1 — backfill must skip personas whose SystemPromptURI isn't a zg:// URI.
+// Default personas are seeded with raw GitHub metadata URLs from M7-D.1; trying
+// to fetch them via zg_storage is a category error and produces only WARN spam.
+func TestReconcile_BackfillPrompts_SkipsNonZGURIs(t *testing.T) {
+	registry := newInMemoryRegistry(t)
+	require.NoError(t, registry.Insert(context.Background(), queue.Persona{
+		TokenID:         "0",
+		Name:            "planner-default",
+		SystemPromptURI: "https://raw.githubusercontent.com/foo/bar/master/contracts/metadata/planner.json",
+	}))
+	require.NoError(t, registry.Insert(context.Background(), queue.Persona{
+		TokenID:         "5",
+		Name:            "custom-mint",
+		SystemPromptURI: "zg://abcdef",
+	}))
+
+	storage := &stubReconcilePromptStorage{
+		prompts: map[string]string{"zg://abcdef": "CUSTOM-PROMPT"},
+	}
+	require.NoError(t, reconcileBackfillPrompts(context.Background(), registry, storage))
+
+	// Non-zg:// URI must NEVER hit storage.FetchPrompt.
+	for _, uri := range storage.fetchCalls {
+		require.True(t, strings.HasPrefix(uri, "zg://"),
+			"backfill should never fetch non-zg:// URI %q", uri)
+	}
+	// The custom-mint zg:// URI was fetched and updated.
+	require.Equal(t, []string{"zg://abcdef"}, storage.fetchCalls)
+	got, err := registry.GetPersonaPrompt(context.Background(), "custom-mint")
+	require.NoError(t, err)
+	require.Equal(t, "CUSTOM-PROMPT", got)
+	// The default persona's prompt_text stays empty (no fetch, no update).
+	got, err = registry.GetPersonaPrompt(context.Background(), "planner-default")
+	require.NoError(t, err)
+	require.Equal(t, "", got)
 }
 
 func TestReconcile_BackfillPrompts_StorageFailureLogsAndContinues(t *testing.T) {

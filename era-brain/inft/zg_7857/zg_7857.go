@@ -183,10 +183,11 @@ type TransferEvent struct {
 	URI     string
 }
 
-// scanChunkSize bounds the FilterTransfer block range per chunk. Galileo
-// (and many production EVM RPCs) reject queries spanning more than ~1k–10k
-// blocks; 1000 is conservative and stays well under any common ceiling.
-const scanChunkSize = uint64(1000)
+// scanChunkSize bounds the FilterTransfer block range per chunk. M7-G initial
+// value was 1000 but Galileo public RPC (Ankr) throttled at chunk 176k+ inside
+// the 90s scan timeout. Bumping to 5000 cuts the chunk count 5× while staying
+// well under most RPCs' max-range cap (typically 10k–50k).
+const scanChunkSize = uint64(5000)
 
 // ScanNewMints returns all Transfer events with from=0x0, to=signer where
 // the event's tokenID > sinceTokenID. Used by the orchestrator boot reconcile
