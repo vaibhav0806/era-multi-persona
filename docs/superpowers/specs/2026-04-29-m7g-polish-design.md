@@ -42,7 +42,13 @@ New shape:
 const scanChunkSize = uint64(1000)
 
 func (p *Provider) ScanNewMints(ctx context.Context, sinceTokenID int64) ([]TransferEvent, error) {
-    head, err := p.client.BlockNumber(ctx)
+    // 90s upper bound on the whole pagination loop. Galileo public RPC has
+    // ~30M blocks; even at 5ms/empty-chunk that's ~2.5min worst case — boot
+    // mustn't hang on it. Caller can pass a longer ctx if needed.
+    scanCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+    defer cancel()
+
+    head, err := p.client.BlockNumber(scanCtx)
     if err != nil {
         return nil, fmt.Errorf("zg_7857 head block: %w", err)
     }
@@ -54,7 +60,7 @@ func (p *Provider) ScanNewMints(ctx context.Context, sinceTokenID int64) ([]Tran
         if end > head { end = head }
 
         iter, err := p.contract.FilterTransfer(
-            &bind.FilterOpts{Context: ctx, Start: start, End: &end},
+            &bind.FilterOpts{Context: scanCtx, Start: start, End: &end},
             []common.Address{zero},
             []common.Address{p.auth.From},
             nil,
@@ -65,13 +71,19 @@ func (p *Provider) ScanNewMints(ctx context.Context, sinceTokenID int64) ([]Tran
         for iter.Next() {
             ev := iter.Event
             if ev.TokenId.Int64() <= sinceTokenID { continue }
-            uri, urierr := p.contract.TokenURI(&bind.CallOpts{Context: ctx}, ev.TokenId)
+            uri, urierr := p.contract.TokenURI(&bind.CallOpts{Context: scanCtx}, ev.TokenId)
             if urierr != nil { continue }
             out = append(out, TransferEvent{
                 TokenID: ev.TokenId.String(),
                 Owner:   ev.To.Hex(),
                 URI:     uri,
             })
+        }
+        // Preserve iter.Error() check from the pre-M7-G implementation —
+        // catches RPC errors during iteration, not just at the FilterTransfer call.
+        if iterErr := iter.Error(); iterErr != nil {
+            iter.Close()
+            return nil, fmt.Errorf("zg_7857 filterTransfer chunk %d-%d iter: %w", start, end, iterErr)
         }
         iter.Close()
     }
@@ -248,6 +260,6 @@ Single phase, one commit:
 
 1. `go build ./...` green; `go test -race -count=1 ./...` green for both modules.
 2. Booting orchestrator with current production state shows NO "Block range is too large" warning.
-3. After one boot with M7-G code, `sqlite3 pi-agent.db "SELECT name, length(prompt_text) FROM personas WHERE name = 'rustacean'"` returns a non-zero length.
+3. After one boot with M7-G code AND 0G KV reachable, `sqlite3 pi-agent.db "SELECT name, length(prompt_text) FROM personas WHERE name = 'rustacean'"` returns a non-zero length. If 0G KV is down at boot, the criterion is deferred to the next successful boot (best-effort per §7 risk #3).
 4. `/task --persona=rustacean ...` works end-to-end (sanity verify post-boot).
 5. With `PI_ZG_PRIVATE_KEY` set to a malformed value, boot logs include `personas: defaultOwnerAddr parse failed`.
