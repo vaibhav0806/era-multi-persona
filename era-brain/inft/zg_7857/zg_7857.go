@@ -183,11 +183,13 @@ type TransferEvent struct {
 	URI     string
 }
 
-// scanChunkSize bounds the FilterTransfer block range per chunk. M7-G initial
-// value was 1000 but Galileo public RPC (Ankr) throttled at chunk 176k+ inside
-// the 90s scan timeout. Bumping to 5000 cuts the chunk count 5× while staying
-// well under most RPCs' max-range cap (typically 10k–50k).
-const scanChunkSize = uint64(5000)
+// scanChunkSize bounds the FilterTransfer block range per chunk. Galileo's
+// public Ankr RPC rejects 5000 ("Block range is too large") and accepts 1000
+// but at ~500ms per call which doesn't finish 30M blocks in any reasonable
+// timeout. 2000 is the midpoint — halves the chunk count vs 1000 if accepted.
+// If Ankr rejects 2000 too, the boot WARN persists but boot continues
+// (reconcileFromChain failure is non-fatal); drop to 1000 in that case.
+const scanChunkSize = uint64(2000)
 
 // ScanNewMints returns all Transfer events with from=0x0, to=signer where
 // the event's tokenID > sinceTokenID. Used by the orchestrator boot reconcile
