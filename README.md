@@ -4,8 +4,6 @@
 
 Telegram in → multi-persona swarm runs on 0G Compute (sealed inference) → diffs land as a GitHub PR. Every persona invocation produces a sealed inference receipt, a 0G Storage append-log entry, and an on-chain iNFT `Invocation` event. New personas can be minted live via `/persona-mint <name> <prompt>`; once minted, they're usable in subsequent tasks via `/task --persona=<name> ...`.
 
-**Built on top of [era](https://github.com/vaibhav0806/era)** — an existing personal Telegram-driven coding agent (M0–M6, ~6 weeks of pre-hackathon work). The fork (M7-A through M7-G) adds the multi-persona swarm + 0G + ENS layers.
-
 ---
 
 ## 🎯 Hackathon submissions (3 tracks, $17.5k target)
