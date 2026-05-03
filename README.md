@@ -1,218 +1,331 @@
 # era-multi-persona
 
-> 0G hackathon fork of [era](https://github.com/vaibhav0806/era) — a personal Telegram-driven coding agent reframed as a multi-persona swarm running on the 0G stack.
+> A multi-persona coding agent swarm running on the [0G](https://0g.ai) intelligent L1, with iNFT-minted personas (ERC-7857) addressable via [ENS](https://ens.domains) subnames.
 
-Same product spine as upstream era: a coding agent that clones a repo, writes code, pushes a branch, opens a PR — driven from Telegram. The fork swaps in a multi-persona pipeline (planner → coder → reviewer), shared persistent memory + audit log on 0G Storage, and (later) sealed-inference receipts on 0G Compute, iNFT-minted personas (ERC-7857), and ENS subnames per persona.
+Telegram in → multi-persona swarm runs on 0G Compute (sealed inference) → diffs land as a GitHub PR. Every persona invocation produces a sealed inference receipt, a 0G Storage append-log entry, and an on-chain iNFT `Invocation` event. New personas can be minted live via `/persona-mint <name> <prompt>`; once minted, they're usable in subsequent tasks via `/task --persona=<name> ...`.
 
-See [FEATURE.md](./FEATURE.md) for the full vision and design principles.
-
-## Hackathon submission targets
-
-| Track | Prize | Status |
-|---|---|---|
-| 0G Best Autonomous Agents, Swarms & iNFT | $7.5k | swarm + receipts on 0G ✅ — iNFT pending M7-D |
-| 0G Best Agent Framework, Tooling & Core Extensions | $7.5k | `era-brain` SDK shipped (M7-A) ✅ |
-| ENS Best Integration for AI Agents | $2.5k | pending M7-E |
-| ENS Most Creative Use *(stretch)* | $2.5k | pending |
-
-Skip: Uniswap, KeeperHub, Gensyn AXL — wrong primitive for a coding agent. Forced integration < focused submission.
+**Built on top of [era](https://github.com/vaibhav0806/era)** — an existing personal Telegram-driven coding agent (M0–M6, ~6 weeks of pre-hackathon work). The fork (M7-A through M7-G) adds the multi-persona swarm + 0G + ENS layers.
 
 ---
 
-## Status: Milestone 7-B.2 — orchestrator wired to 0G Storage
+## 🎯 Hackathon submissions (3 tracks, $17.5k target)
 
-M7-B.2 wires real `/task` to the dual memory provider — every persona's audit-log receipt is written to BOTH 0G testnet AND local SQLite, with graceful degradation when 0G writes fail.
-
-- **`memory/dual` provider in production.** `cmd/orchestrator/main.go` constructs `dual.New(sqlite_cache, zg_composite_primary)` whenever `PI_ZG_PRIVATE_KEY/PI_ZG_EVM_RPC/PI_ZG_INDEXER_RPC` env vars are present. Fall-back to sqlite-only when missing — M7-A.5 behavior preserved as the default.
-- **Reviewer prompt cap.** `internal/swarm/composeCoderOutput` truncates the diff fed to the reviewer at 30k chars (~7.5k tokens). Big diffs (lockfile regenerations, large refactors) used to blow past gpt-4o-mini's 128k token window with `openrouter 400`; now they don't.
-- **Resilience proof in production.** A reverted 0G transaction during the live gate (`Transaction execution failed`) was caught by `dual.Provider.onPrimaryError`, surfaced as a `slog.Warn`, and did NOT block the task. Cache held the canonical record; reviewer continued; PR landed.
-- **5 testnet transactions on the wallet** ([Galileo block explorer](https://chainscan-galileo.0g.ai/)) prove writes are real, not theoretical.
-
-Everything from M7-B.1 still applies.
-
-## Status: Milestone 7-B.1 — `era-brain` 0G Storage SDK
-
-M7-B.1 added 0G Storage as a `memory.Provider` impl in the `era-brain` SDK:
-
-- **`memory/zg_kv`** — KV semantics on 0G KV streams. `Provider` + `LiveOps` (SDK wrapper) + `kvOps` interface seam for unit tests.
-- **`memory/zg_log`** — append-only log on 0G KV streams using sequence-numbered keys (`000001`, `000002`, ...). Reuses `zg_kv.LiveOps` so SDK init is shared.
-- **`memory/dual`** — write-both, read-cache-first wrapper. Cache failure is fatal (broken local DB); primary failure is non-fatal (logged via optional `OnPrimaryError` hook, task continues).
-- **5 SDK deviations from documented templates** captured in `scripts/zg-smoke/zg-smoke.go` header comments — module path is `0gfoundation/0g-storage-client` (not `0glabs`), Batcher is in-place mutation not builder, indexer lives in its own package, etc. Read those before extending.
-- Testnet endpoints: EVM RPC `https://evmrpc-testnet.0g.ai`, Indexer Turbo `https://indexer-storage-testnet-turbo.0g.ai`. The KV node URL is currently best-effort — read paths gracefully degrade to cache when no working KV node is configured.
-
-## Status: Milestone 7-A.5 — swarm runner integration
-
-M7-A.5 wires the `era-brain` swarm into era's existing `/task` pipeline:
-
-- **Orchestrator-side swarm.** `internal/swarm/` calls planner (LLM) before container spawn, reviewer (LLM) after Pi finishes — Pi remains the coder persona's tool-loop engine inside Docker. Spec §3 said "container hosts the swarm"; we deviated for 2-week velocity (no Docker image rebuild needed; reviewer naturally consumes the GitHub-compare diff that's already wired).
-- **CompletedArgs cascade.** `Notifier.NotifyCompleted` widened from positional args to a `CompletedArgs` struct carrying persona breakdown (planner plan, reviewer decision/critique, 3 receipts). All callers updated atomically.
-- **Telegram persona DM.** Completion DM gets `— planner: <step list>` and `— reviewer: approve|flag — <critique>` footers. Needs-review DM gets the same persona context above the existing Approve/Reject keyboard.
-- **Per-task gas budget.** Default OpenRouter model `openai/gpt-4o-mini` for both planner + reviewer (~$0.001 per task). Override via `PI_BRAIN_PLANNER_MODEL` / `PI_BRAIN_REVIEWER_MODEL`.
-
-## Status: Milestone 7-A — `era-brain` SDK skeleton
-
-M7-A stood up a `go get`-able Go SDK at `era-brain/` (separate Go module inside this monorepo) with the six core abstractions powering everything that follows:
-
-- **Five interfaces** — `Persona`, `MemoryProvider`, `LLMProvider`, `INFTRegistry` *(impl in M7-D)*, `IdentityResolver` *(impl in M7-E)*.
-- **`Brain.Run(personas...)` orchestrator** — sequential persona chain with output threading, receipt accumulation, fail-fast on first persona error.
-- **`LLMPersona`** — concrete `Persona` impl that composes a prompt from (system prompt + prior outputs), calls the LLM, computes input/output hashes via length-prefixed encoding (collision-resistant for M7-D's on-chain receipt logging), writes a `Receipt` to the audit log.
-- **Reference impls** — `memory/sqlite` (production-grade with `SetMaxOpenConns(1)` for concurrent safety + `is_kv` flag for dual KV/Log on a single table), `llm/openrouter` (OpenAI-compatible HTTP client with sealed=false; sealed=true arrives in M7-C).
-- **Working example** — `era-brain/examples/coding-agent` demonstrates the 3-persona flow against real OpenRouter; live gate verified planner numbered list + coder unified diff + reviewer DECISION line.
+| Track | Prize | Status | Proof |
+|---|---|---|---|
+| **0G Best Autonomous Agents, Swarms & iNFT** | $7.5k | ✅ shipped | iNFT contract [`0x33847c...3D16`](https://chainscan-galileo.0g.ai/address/0x33847c5500C2443E2f3BBf547d9b069B334c3D16) on 0G Galileo, 5+ minted personas, `Invocation` events per task |
+| **0G Best Agent Framework, Tooling & Core Extensions** | $7.5k | ✅ shipped | Standalone [`era-brain`](./era-brain/) Go SDK — `go get github.com/vaibhav0806/era-multi-persona/era-brain` |
+| **ENS Best Integration for AI Agents** | $2.5k | ✅ shipped | Per-persona subnames on Sepolia: [planner](https://sepolia.app.ens.domains/planner.vaibhav-era.eth), [coder](https://sepolia.app.ens.domains/coder.vaibhav-era.eth), [reviewer](https://sepolia.app.ens.domains/reviewer.vaibhav-era.eth), [pythonic](https://sepolia.app.ens.domains/pythonic.vaibhav-era.eth) — live-resolved in every task DM |
 
 ---
 
-## Prerequisites
+## 🔍 Verify on-chain (judges, click here)
 
-- Go 1.22+ (`brew install go`)
-- Docker (`brew install --cask docker`)
-- A Telegram bot token (from [@BotFather](https://t.me/BotFather)) and your numeric user ID (message [@userinfobot](https://t.me/userinfobot))
-- A throwaway GitHub repo (e.g. `<you>/era-sandbox`) with a `README.md` committed
-- A [GitHub App](https://github.com/settings/apps/new) installed on your sandbox repo with `Contents: Read and write` + `Metadata: Read-only` permissions. Note the App ID, download the private key (.pem), and note the Installation ID from the install URL.
-- An [OpenRouter](https://openrouter.ai) account + API key with at least a few dollars of credit
-- A [Tavily](https://tavily.com) API key (free tier: 1000 queries/mo) for the sidecar's `/search` endpoint
-- **(M7-B onward)** A 0G testnet wallet (`cast wallet new` or any EVM-compatible private key) funded from the [0G testnet faucet](https://docs.0g.ai/developer-hub/testnet/testnet-overview).
+**0G Galileo testnet** (chainID 16602):
+- iNFT contract: [`0x33847c5500C2443E2f3BBf547d9b069B334c3D16`](https://chainscan-galileo.0g.ai/address/0x33847c5500C2443E2f3BBf547d9b069B334c3D16)
+- `Invocation(tokenId, receiptHash, ts)` events fire after every persona run — one event per persona per task
+- Mint events fire from `/persona-mint`
 
-## Setup
+**Sepolia ENS** (parent `vaibhav-era.eth`, owner `0x6DB1508Deeb45E0194d4716349622806672f6Ac2`):
+- [planner.vaibhav-era.eth](https://sepolia.app.ens.domains/planner.vaibhav-era.eth) → token #0
+- [coder.vaibhav-era.eth](https://sepolia.app.ens.domains/coder.vaibhav-era.eth) → token #1
+- [reviewer.vaibhav-era.eth](https://sepolia.app.ens.domains/reviewer.vaibhav-era.eth) → token #2
+- [rustacean.vaibhav-era.eth](https://sepolia.app.ens.domains/rustacean.vaibhav-era.eth) → token #4 (custom mint)
+- [pythonic.vaibhav-era.eth](https://sepolia.app.ens.domains/pythonic.vaibhav-era.eth) → token #5 (custom mint)
+
+Each subname has 4 text records: `inft_addr`, `inft_token_id`, `zg_storage_uri`, `description` — readable via `cast call $RESOLVER 'text(bytes32,string)(string)' $(cast namehash <name>.vaibhav-era.eth) <key>`.
+
+**Sample PR opened by `/task --persona=pythonic`:** [pi-agent-sandbox#9](https://github.com/vaibhav0806/pi-agent-sandbox/pull/9).
+
+---
+
+## 🧠 Architecture
+
+```
+                    ┌────────────────┐
+                    │   Telegram     │  /task --persona=rustacean ...
+                    └───────┬────────┘
+                            ▼
+                    ┌────────────────┐
+                    │  orchestrator  │  era root — queue, runner, swarm wrapper
+                    └───┬────────┬───┘
+                        │        │
+              ┌─────────┘        └──────────┐
+              ▼                             ▼
+       ┌─────────────┐                ┌──────────┐
+       │  era-brain  │                │ Pi-Docker│  coder slot — task-isolated container
+       │     SDK     │                └──────────┘  (description prefix = persona prompt)
+       └──┬─────┬─┬──┘
+          │     │ │
+          │     │ └──────────┐
+          ▼     ▼            ▼
+   ┌─────────┐ ┌────┐   ┌─────────┐
+   │planner  │ │mem │   │reviewer │  brain.LLMPersona instances
+   │(sealed) │ │evol│   │(sealed) │  → call 0G Compute (qwen-2.5-7b-instruct)
+   └────┬────┘ └────┘   └────┬────┘  → produce brain.Receipt (sha256 of canonical fields)
+        │      0G KV          │
+        │   namespace=         │
+        │   <persona-name>     │
+        │                      │
+        ▼                      ▼
+  ┌─────────────────────────────────────┐
+  │ 0G Storage  (zg_log audit + zg_kv mem) │  primary (canonical)
+  │ SQLite      (dual provider cache)      │  cache (hot read)
+  └─────────────────────────────────────┘
+        │
+        ▼
+  ┌──────────────┐         ┌─────────────────┐
+  │ EraPersonaINFT│ ─────▶  │  Invocation     │  on-chain receipt per persona run
+  │ (0G Galileo)  │         │  events         │
+  └──────────────┘         └─────────────────┘
+        │
+        ▼
+  ┌────────────────────────────────────────┐
+  │ ENS subname (Sepolia NameWrapper)      │  live-resolved in every task DM
+  │   <persona>.vaibhav-era.eth            │  → token_id + iNFT addr + 0G URI
+  └────────────────────────────────────────┘
+```
+
+### Three layers
+
+1. **`era-brain` Go SDK** (separate `go.mod`, `go-get`-able). Defines `Persona`, `Brain`, `MemoryProvider`, `LLMProvider`, `INFTRegistry`, `IdentityResolver`. Concrete impls: SQLite + OpenRouter + 0G Storage (`zg_kv`/`zg_log`/`dual`) + 0G Compute (sealed inference) + ERC-7857 Go client (`zg_7857`) + ENS resolver (`identity/ens`). Reusable beyond era.
+2. **era orchestrator** (this repo). Telegram bot, queue, Docker runner, GitHub App. Imports `era-brain`. Replaces M0–M6's monolithic Pi loop with `Brain.Run([planner, coder, reviewer])`.
+3. **On-chain.** `EraPersonaINFT` (forked ERC-7857) on 0G Galileo. ENS subnames on Sepolia (parent name pre-registered + wrapped manually).
+
+### Per-task flow
+
+```
+Telegram /task --persona=rustacean ...
+  ↓
+orchestrator queues + claims task
+  ↓
+era-brain.Brain.Run:
+  planner   → 0G Compute (sealed) → brain.Receipt → 0G Storage append + iNFT.recordInvocation
+  coder     → Pi-Docker (prompt prefix=rustacean's stored prompt) → diff
+            → iNFT.recordInvocation against rustacean's tokenID
+  reviewer  → 0G Compute (sealed) → brain.Receipt → 0G Storage append + iNFT.recordInvocation
+  ↓
+ENS lookup (Sepolia) for each persona's subname → live text records
+  ↓
+Telegram DM: PR URL + planner plan + reviewer decision + personas footer
+              (live-resolved at DM-render time — judges can verify by clicking)
+```
+
+---
+
+## 🎬 Quick demo (5 minutes for judges)
+
+1. **Mint a custom persona live:**
+   ```
+   /persona-mint pythonic You write clean Pythonic code. Type hints everywhere, dataclasses over dicts, pathlib over os.path.
+   ```
+   Bot replies with: token #N, [chainscan link](https://chainscan-galileo.0g.ai/) (verify mint tx), [ENS link](https://sepolia.app.ens.domains/) (verify subname), 0G storage URI for the prompt blob.
+
+2. **Use it in a task:**
+   ```
+   /task --persona=pythonic add a /healthz endpoint that returns 200 OK
+   ```
+   Watch orchestrator stdout for:
+   - 4 0G Storage txs (planner audit + planner KV + reviewer audit + reviewer KV)
+   - 3 0G iNFT `recordInvocation` txs (planner=token #0, pythonic=token #N, reviewer=token #2)
+   - GitHub PR opens
+   - Telegram DM ends with a `personas:` footer:
+     ```
+     personas:
+       planner.vaibhav-era.eth → token #0 (0x33847c5500…)
+       pythonic.vaibhav-era.eth → token #5 (0x33847c5500…)
+       reviewer.vaibhav-era.eth → token #2 (0x33847c5500…)
+     ```
+
+3. **List minted personas:**
+   ```
+   /personas
+   ```
+   Returns the full list (defaults + custom).
+
+The `personas:` DM footer values are **fetched from Sepolia at DM-render time** — not cached, not hardcoded. Edit a text record on Sepolia and the next task's DM reflects the change without restarting the orchestrator.
+
+---
+
+## 🛠 Tech stack
+
+- **Go 1.25** (era + era-brain SDK)
+- **0G Galileo testnet** — chain ID 16602, RPC `https://evmrpc-testnet.0g.ai`
+- **0G Storage** — `zg_kv` (KV streams) + `zg_log` (sequence-numbered append-only log)
+- **0G Compute** — sealed inference via TEE-signed responses (`Zg-Res-Key` header), model `qwen/qwen-2.5-7b-instruct`
+- **Foundry** — `EraPersonaINFT` contract (ERC-721 + Ownable + Invocation event), OpenZeppelin v5.6.1, solc 0.8.24
+- **abigen v1.17.2** — Go bindings for `EraPersonaINFT`, `MockNameWrapper`, `MockPublicResolver`
+- **Sepolia ENS** — NameWrapper at `0x0635513f179D50A207757E05759CbD106d7dFcE8`, PublicResolver at `0xE99638b40E4Fff0129D56f03b55b6bbC4BBE49b5`
+- **SQLite + goose migrations** — local hot path; 0G is canonical
+- **Telegram Bot API** — single-user gate (`PI_TELEGRAM_ALLOWED_USER_ID`)
+- **GitHub App** — installation token source for branch push + PR open
+- **Docker** — task-isolated container per `/task` (Pi-in-Docker as the coder slot)
+- **OpenRouter** — fallback for sealed inference failures
+
+---
+
+## 🚀 Quickstart
+
+### Prerequisites
+
+- Go 1.25, Docker, jq, Foundry (`forge` + `cast`)
+- Telegram bot token + your numeric user ID
+- A throwaway sandbox GitHub repo + GitHub App with `Contents: Read/write` + `Metadata: Read-only` permissions
+- OpenRouter API key (small balance for fallback)
+- 0G Galileo testnet wallet with ≥ 0.05 ZG ([faucet](https://docs.0g.ai/developer-hub/testnet/testnet-overview))
+- Sepolia ENS parent name registered + wrapped to the same wallet ([sepolia.app.ens.domains](https://sepolia.app.ens.domains))
+- Sepolia wallet funded with ≥ 0.05 ETH ([Google Cloud faucet](https://cloud.google.com/application/web3/faucet/ethereum/sepolia))
+
+### Setup
 
 ```bash
 git clone git@github.com:vaibhav0806/era-multi-persona.git
-cd era-multi-persona/era   # repo's working dir
+cd era-multi-persona/era
 cp .env.example .env
-# Edit .env and fill in the required values. PI_ZG_* are optional —
-# orchestrator falls back to sqlite-only when missing (M7-A.5 baseline).
+# Fill in the env vars. PI_ZG_*, PI_ENS_*, and PI_ZG_INFT_CONTRACT_ADDRESS unlock
+# the hackathon features. PI_GITHUB_APP_*, PI_TELEGRAM_*, PI_OPENROUTER_API_KEY
+# are required for the base /task functionality.
 
-make docker-runner    # builds bin/era-runner-linux + era-runner image
-make build            # builds bin/orchestrator
+make abigen          # iNFT contract bindings
+make abigen-ens      # ENS bindings (mock contracts → bindings)
+make docker-runner   # Pi-in-Docker image
+make build           # bin/orchestrator
 ./bin/orchestrator
 ```
 
-Expected boot lines:
+Pre-flight check (verify the parent name is wrapped):
+```bash
+cast call 0x0635513f179D50A207757E05759CbD106d7dFcE8 \
+  'ownerOf(uint256)(address)' \
+  $(cast namehash $PI_ENS_PARENT_NAME) \
+  --rpc-url $PI_ENS_RPC
+```
+Should return your signer address. `0x0...0` = name not wrapped — wrap via the ENS UI.
+
+### Expected boot
 
 ```
-... goose: successfully migrated database to version: 9
-... INFO github app token source configured app_id=... installation_id=...
-INFO[0000] Selecting nodes ...                     (only when PI_ZG_* set)
-INFO[0000] Selected Nodes... ips="[...]"
-... INFO 0G storage wired indexer=https://... kv_node_set=true|false
-... INFO orchestrator ready version=... db_path=... sandbox_repo=...
-... INFO digest scheduled fires_at_utc=...
+goose: successfully migrated database to version: 12
+INFO github app token source configured
+INFO 0G storage wired indexer=https://indexer-storage-testnet-turbo.0g.ai
+INFO 0G Compute sealed inference wired model=qwen/qwen-2.5-7b-instruct
+INFO 0G iNFT registry wired contract=0x33847c5500C2443E2f3BBf547d9b069B334c3D16
+INFO ENS resolver wired parent=vaibhav-era.eth
+INFO personas reconciled
+INFO orchestrator ready
 ```
 
-## Telegram commands
+---
 
-| Command | Effect |
-|---------|--------|
-| `/task <description>` | Queue a task on the default sandbox repo. |
-| `/task <owner>/<repo> <description>` | Queue a task on any repo your GitHub App is installed on. |
-| `/task --budget=quick\|default\|deep <desc>` | Override the per-task budget profile. |
-| `/status <id>` | Report the current status of a task. |
-| `/list` | Show the 10 most recent tasks. |
-| `/cancel <id>` | Cancel a queued (not-yet-started) task. |
-| `/retry <id>` | Clone a prior task's description into a new queued task. |
-| `/ask <repo> <question>` | Read-only short answer (no commit, no push). |
-| `/stats` | 24h/7d/30d activity summary. |
-
-A successful `/task` produces a Telegram completion DM with branch + PR URL + the planner step list (truncated to 200 chars) + reviewer decision. A flagged `/task` produces a needs-review DM with diff preview + Approve/Reject inline buttons.
-
-## Development
+## 🧪 Testing
 
 ```bash
-make test         # unit + integration tests for era root module
-make test-race    # with race detector
-make lint         # go vet
-make fmt          # go fmt + goimports
+make test                                     # full unit + integration suite (era root)
+make test-race                                # with race detector
+cd era-brain && go test -race ./...           # SDK tests
 
-# era-brain SDK has its own go.mod
-cd era-brain && go test -race ./...
-
-# Live 0G testnet tests (build-tagged so CI skips them)
-set -a; source ../.env; set +a
-go test -tags zg_live ./memory/zg_kv/... ./memory/zg_log/...
-
-# era's full e2e (requires .env + Docker + sandbox repo, creates real branch)
-cd .. && set -a; source .env; set +a
-go test -tags e2e -v -timeout 3m ./internal/e2e/...
+# live testnet tests (build-tagged, skip in CI)
+set -a; source .env; set +a
+go test -tags zg_live ./era-brain/inft/zg_7857/...        # iNFT mint + recordInvocation
+go test -tags ens_live ./era-brain/identity/ens/...       # ENS subname write+read
+go test -tags zg_live ./era-brain/memory/zg_kv/...        # 0G Storage KV
 ```
 
-## Layout
+---
+
+## 📜 Milestones (proof of work)
+
+Each milestone is a tagged commit, with a spec at `docs/superpowers/specs/` and a plan at `docs/superpowers/plans/`. All shipped via brainstorm → spec → plan → execute, strict TDD.
+
+### Hackathon fork (M7-*)
+
+| Milestone | Tag | What |
+|---|---|---|
+| M7-A | `m7a-done` | `era-brain` SDK skeleton: 5 interfaces + Brain orchestrator + sqlite + openrouter |
+| M7-A.5 | `m7a5-done` | Orchestrator-side swarm wrapper (planner-before, reviewer-after); CompletedArgs cascade; Telegram persona DM |
+| M7-B.1 | `m7b1-done` | `zg_kv` + `zg_log` + `dual` 0G Storage providers; live testnet writes |
+| M7-B.2 | `m7b2-done` | Production `/task` writes audit log to dual(sqlite, 0G); resilient on primary failures |
+| M7-B.3 | `m7b3-done` | Persona evolving memory: `LLMPersona` reads prior memory before LLM call, prepends to prompt, writes updated memory |
+| M7-C.1 | `m7c1-done` | `zg_compute` LLM provider with sealed-inference receipts via TEE-signed responses |
+| M7-C.2 | `m7c2-done` | Orchestrator wires sealed inference; receipts flip `Sealed=true`; reviewer cross-checks |
+| M7-D.1 | `m7d1-done` | `EraPersonaINFT` Foundry contract deployed to 0G Galileo; 3 default personas minted at deploy time |
+| M7-D.2 | `m7d2-done` | Go iNFT client (`zg_7857`); `recordInvocation` per persona per task |
+| M7-E | `m7e-done` | ENS subname registration + live-resolved DM footer; `tgNotifier.ensFooter` queries Sepolia at render time |
+| M7-F | `m7f-done` | `/persona-mint <name> <prompt>` + `/task --persona=<name>` + `/personas` |
+| M7-F.6 | `m7f6-done` | SQLite prompt cache + 0G fallback for `/task --persona=` (fixes 0G KV testnet flakiness) |
+| M7-G | `m7g-done` | Polish: paginate Transfer scan, auto-backfill empty prompts, slog.Warn on parse failures |
+
+### Pre-fork upstream era (M0-M6)
+
+See [the upstream era repo](https://github.com/vaibhav0806/era). Briefly:
+
+- **M0** — plumbing (SQLite, Telegram loop, Docker runner, dummy agent)
+- **M1** — real agent (Pi + OpenRouter, budget caps)
+- **M2** — security (network allowlist, secret proxy sidecar, diff-scan reward-hacking guards, GitHub App)
+- **M3** — Telegram approval buttons + EOD digest
+- **M3.5** — multi-repo per task
+- **M4** — Hetzner VPS deploy + PR-per-task + mid-run cancel
+- **M5** — CI + auto-deploy + offsite backups + pre-commit gate
+- **M6** — agent sharpness: budget profiles, smarter egress, reply-to-continue, mid-run progress, `/ask`, `/stats`
+
+---
+
+## 🗺 Repo layout
 
 ```
-cmd/orchestrator/             main entrypoint — wires queue, runner, swarm, dual provider
-cmd/runner/, cmd/sidecar/     in-container Pi loop + secret-proxy sidecar
-internal/config/              env-var config
-internal/db/                  SQLite + sqlc queries (era's main DB at ./pi-agent.db)
-internal/telegram/            bot client + command handler
-internal/queue/               task lifecycle (create, claim, run, notify); CompletedArgs/NeedsReviewArgs
-internal/swarm/               era-brain swarm wrapper — Plan, Review, InjectPlan, planner+reviewer prompts
-internal/runner/              Docker wrapper + adapter to queue.Runner
-internal/audit/               tool-call audit log (era's main DB)
-internal/diffscan/            reward-hacking pattern detection
-internal/digest/              EOD digest generator
-internal/githubapp/           GitHub App installation token source
-internal/githubcompare/       PR diff fetch (consumed by both diffscan + reviewer)
-internal/githubpr/            PR open/close/label/comment
-internal/githubbranch/        branch delete on reject
-internal/e2e/                 end-to-end test (build tag: e2e)
-internal/budget/              per-task budget profiles
-internal/replyprompt/         reply-to-continue prompt composition
-internal/stats/               /stats query types
-internal/progress/            mid-run progress event types
+cmd/orchestrator/          main entrypoint — wires queue, runner, swarm, all 0G/ENS providers
+cmd/runner/, cmd/sidecar/  in-container Pi loop + secret-proxy sidecar
+internal/queue/            task lifecycle + INFTProvider, ENSWriter, PersonaRegistry, PromptStorage seams
+internal/swarm/            era-brain swarm wrapper (planner + reviewer brain personas; coder = Pi)
+internal/telegram/         bot client + command handler (/task, /persona-mint, /personas, ...)
+internal/db/               SQLite + sqlc; personas + tasks tables
+internal/persona/          shared Persona type to break import cycles
+internal/runner/           Docker wrapper + adapter to queue.Runner
+internal/diffscan/         reward-hacking pattern detection
+internal/digest/           EOD digest generator
+internal/githubapp/        GitHub App installation token source
 
-era-brain/                    standalone Go SDK — separate go.mod, go-get-able as
-                              github.com/vaibhav0806/era-multi-persona/era-brain
-era-brain/brain/              Brain orchestrator + Persona interface + LLMPersona
-era-brain/memory/             MemoryProvider interface + impls
-era-brain/memory/sqlite/      reference impl (used as cache by dual)
-era-brain/memory/zg_kv/       0G KV streams (M7-B.1) — KV semantics
-era-brain/memory/zg_log/      0G KV streams (M7-B.1) — Log semantics via sequence-numbered keys
-era-brain/memory/dual/        write-both, read-cache-first wrapper
-era-brain/llm/                LLMProvider interface + impls
-era-brain/llm/openrouter/     OpenRouter HTTP client
-era-brain/inft/               INFTRegistry interface (impl in M7-D)
-era-brain/identity/           IdentityResolver interface (impl in M7-E)
-era-brain/examples/coding-agent/  3-persona reference example w/ optional --zg-live
+era-brain/                 standalone Go SDK (separate go.mod)
+  brain/                   Brain orchestrator + Persona interface + LLMPersona
+  memory/                  MemoryProvider impls: sqlite, zg_kv, zg_log, dual
+  llm/                     LLMProvider impls: openrouter, zg_compute (sealed)
+  inft/                    INFTRegistry interface + zg_7857 impl (ERC-721 client via abigen)
+  identity/                Resolver interface + ens impl (NameWrapper + PublicResolver)
+  storage/zg_storage/      0G prompt blob upload/fetch (M7-F)
+  examples/coding-agent/   3-persona reference example
 
-migrations/                   goose SQL + embed package
-queries/                      sqlc input SQL
-docker/runner/                Dockerfile + entrypoint for the Pi-based runner
-scripts/smoke/                manual smoke-test reference scripts (M0+)
-scripts/zg-smoke/             0G Storage SDK verification script (M7-B.1)
-deploy/install.sh             one-shot Hetzner VPS bootstrap (M4+)
-docs/superpowers/specs/       brainstormed design docs per milestone
-docs/superpowers/plans/       implementation plans per milestone
+contracts/                 Foundry repo
+  src/EraPersonaINFT.sol   forked ERC-7857 (mint, tokenURI, recordInvocation)
+  test/                    forge tests + minimal mock ENS contracts for Go test fixtures
+
+migrations/                goose SQL migrations (0001 → 0012)
+docs/superpowers/specs/    brainstormed design docs per milestone
+docs/superpowers/plans/    implementation plans per milestone
 ```
 
-## Roadmap
+---
 
-**Hackathon fork (M7-A onward):**
+## 🔒 Security notes
 
-- **M7-A** — `era-brain` SDK skeleton: 5 interfaces + Brain orchestrator + sqlite + openrouter impls + coding-agent example
-- **M7-A.5** — orchestrator-side swarm: `internal/swarm/` wraps `Brain`; planner-before-container + reviewer-after-PR; persona DM
-- **M7-B.1** — `era-brain` 0G Storage SDK: zg_kv + zg_log + dual providers; live testnet writes
-- **M7-B.2** ← *you are here*: production `/task` writes audit log to dual(sqlite, 0G); resilient on primary failures
-- **M7-B.3** *(planned)* — persona KV reads: `LLMPersona` reads prior memory before LLM call → "evolving memory" criterion lands
-- **M7-C** *(planned)* — 0G Compute sealed inference as `LLMProvider` impl; receipts flip `Sealed=true`; reviewer cross-checks the attestation
-- **M7-D** *(planned)* — fork ERC-7857; deploy iNFT contract; mint 3 default personas + `/persona-mint` for custom; `recordInvocation(tokenId, receiptHash)` per persona run
-- **M7-E** *(planned)* — ENS subname registration + wildcard resolver: `coder.<user>-era.eth` resolves to iNFT addr + 0G Storage URI for memory blob
-- **M7-F** *(planned)* — polish, examples, demo video, hackathon submission
+Original M0 caveats (network allowlist, prompt injection guards, push credential blast radius) all apply. M2 hardened most of them; M5 added pre-commit test gating. The hackathon fork additionally introduces:
 
-**Pre-fork upstream era milestones (M0-M6):** see [the original era repo](https://github.com/vaibhav0806/era) for full M0-M6 status sections. Summary:
-
-- **M0** — plumbing: SQLite persistence, Telegram loop, Docker runner, dummy agent
-- **M1** — real agent: Pi + OpenRouter (Kimi K2.5/K2.6), per-task token + 1h timeout caps
-- **M2** — security: network allowlist per container, secret proxy sidecar, untrusted-content tags, diff-scan reward-hacking guards, GitHub App installation tokens
-- **M3** — approvals + digest: inline Telegram approval buttons, EOD digest
-- **M3.5** — multi-repo per task (`/task <owner>/<repo> <desc>`)
-- **M4** — Hetzner VPS deploy + PR-per-task + mid-run `/cancel` + Pi prose in DMs
-- **M5** — GitHub Actions CI + auto-deploy, offsite B2 backups, pre-commit test gate, runner tooling baked in
-- **M6** — agent sharpness: budget profiles, smarter egress, reply-to-continue, mid-run progress DMs, `/ask`, `/stats`
-
-## Security notes — read before running
-
-The original M0 caveats (network allowlist, prompt injection, push credential blast radius) all apply. M2 hardened most of them; M5 added pre-commit test gating. The hackathon fork additionally introduces:
-
-- **Hot wallet for 0G testnet.** `PI_ZG_PRIVATE_KEY` lives in `.env`. Use a wallet with **only enough ZG for gas** — never put real funds in it. Loss of the wallet = loss of mint capability for that orchestrator instance, NOT loss of past data (0G Storage is content-addressed; iNFTs already minted are owned by their respective wallets).
-- **0G failures are non-fatal.** When 0G writes fail (testnet hiccups, indexer down, transaction reverts), `dual.Provider.onPrimaryError` logs via `slog.Warn` and the task continues. The cache (SQLite) holds the canonical local record. Don't treat 0G as load-bearing for task completion.
-- **Same Telegram-allowlist rule as M0.** The orchestrator silently drops messages from any user ID other than `PI_TELEGRAM_ALLOWED_USER_ID`.
+- **Hot wallet for 0G Galileo + Sepolia.** `PI_ZG_PRIVATE_KEY` is the same key for both chains. Lives in `.env`. Use a wallet with **only enough testnet ETH/ZG for gas** — never put real funds in it. Loss of the wallet = loss of mint capability for that orchestrator instance, NOT loss of past data (data on 0G Storage is content-addressed; iNFTs already minted are owned by their respective wallets and on-chain forever).
+- **All on-chain writes are best-effort.** When 0G or Sepolia writes fail (testnet hiccups, RPC throttling, transaction reverts), `dual.Provider.onPrimaryError` / `slog.Warn` handles it — task completion never depends on chain liveness. The cache (SQLite) holds the canonical local record.
+- **Sealed inference receipt forgery.** The receipt is only as trustworthy as 0G Compute's own attestation chain. The orchestrator runs the `LLMProvider` impl in the same process as the persona, so "the provider writes the receipt" is a code-boundary, not a trust-boundary, claim. Mitigation: the **reviewer cross-checks** the receipt hash against 0G Compute's published verifier. If 0G's attestation is broken, every team's submission has the same hole.
+- **Single-user Telegram allowlist.** Bot silently drops messages from any user other than `PI_TELEGRAM_ALLOWED_USER_ID`. Necessary because `/persona-mint` costs real (testnet) ETH and `/task` costs real LLM tokens.
 
 **Rule of thumb:** still a personal tool. Sandbox repo only.
+
+---
+
+## 🙏 Acknowledgements
+
+- [0G Labs](https://0g.ai) for the intelligent L1 infrastructure (Storage, Compute, Chain)
+- [ENS](https://ens.domains) for the canonical Web3 identity layer
+- [OpenRouter](https://openrouter.ai) for the model fallback path
+- [Foundry](https://book.getfoundry.sh) for Solidity tooling
+- [go-ethereum](https://geth.ethereum.org) for `abigen` and the Ethereum client libraries
+- [Pi](https://github.com/anthropics/pi-mcp-server) — the in-container coding agent that powers the coder slot
+
+## License
+
+MIT.
